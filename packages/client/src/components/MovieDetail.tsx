@@ -1,0 +1,419 @@
+import { useState, useEffect, useCallback } from "react";
+import { fetchMeta, setStreams, getSessionToken, type PlexItem, type PlexMeta } from "../lib/api";
+
+interface MovieDetailProps {
+  item: PlexItem;
+  isHost: boolean;
+  onPlay: (item: PlexItem, subtitles: boolean) => void;
+  onBack: () => void;
+}
+
+function authUrl(url: string): string {
+  const token = getSessionToken();
+  if (!token || !url) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
+function formatDuration(ms: number | undefined): string {
+  if (!ms) return "";
+  const totalMin = Math.round(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+export function MovieDetail({ item, isHost, onPlay, onBack }: MovieDetailProps) {
+  const [meta, setMeta] = useState<PlexMeta | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedAudio, setSelectedAudio] = useState<number | null>(null);
+  const [selectedSubtitle, setSelectedSubtitle] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchMeta(item.ratingKey)
+      .then((m) => {
+        if (cancelled) return;
+        setMeta(m);
+        const defaultAudio = m.audioTracks.find((t) => t.selected) ?? m.audioTracks[0];
+        if (defaultAudio) setSelectedAudio(defaultAudio.id);
+        // Default to no subtitles
+        setSelectedSubtitle(null);
+      })
+      .catch(console.error)
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [item.ratingKey]);
+
+  const handlePlay = useCallback(async () => {
+    if (!meta?.partId) return;
+    try {
+      setError(null);
+      if (selectedAudio != null) {
+        await setStreams(meta.partId, {
+          audioStreamID: selectedAudio,
+          subtitleStreamID: selectedSubtitle ?? 0,
+        });
+      }
+      onPlay(item, selectedSubtitle != null);
+    } catch (err) {
+      console.error("Failed to set streams:", err);
+      setError("Failed to configure playback. Please try again.");
+    }
+  }, [meta, selectedAudio, selectedSubtitle, item, onPlay]);
+
+  const backdropUrl = meta?.art ? authUrl(meta.art) : null;
+  const posterUrl = meta?.thumb ? authUrl(meta.thumb) : (item.thumb ? authUrl(item.thumb) : null);
+
+  return (
+    <div style={styles.page}>
+      {/* Backdrop */}
+      {backdropUrl && (
+        <div style={styles.backdropWrap}>
+          <img src={backdropUrl} alt="" style={styles.backdropImg} />
+          <div style={styles.backdropOverlay} />
+        </div>
+      )}
+
+      {/* Back button */}
+      <button onClick={onBack} style={styles.backBtn}>
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M12.5 15L7.5 10L12.5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        Back
+      </button>
+
+      {loading ? (
+        <div style={styles.loadingWrap}>
+          <div style={styles.spinner} />
+          <p style={styles.loadingText}>Loading...</p>
+        </div>
+      ) : meta ? (
+        <div style={styles.content}>
+          {/* Poster + Info layout */}
+          <div style={styles.layout}>
+            {/* Poster */}
+            {posterUrl && (
+              <div style={styles.posterWrap}>
+                <img src={posterUrl} alt={meta.title} style={styles.poster} />
+              </div>
+            )}
+
+            {/* Info */}
+            <div style={styles.info}>
+              <h1 style={styles.title}>{meta.title}</h1>
+
+              {/* Meta row */}
+              <div style={styles.metaRow}>
+                {meta.year && <span style={styles.metaItem}>{meta.year}</span>}
+                {meta.duration && (
+                  <>
+                    <span style={styles.metaDot}>&middot;</span>
+                    <span style={styles.metaItem}>{formatDuration(meta.duration)}</span>
+                  </>
+                )}
+              </div>
+
+              {/* Genres */}
+              {meta.genres.length > 0 && (
+                <div style={styles.genres}>
+                  {meta.genres.map((g) => (
+                    <span key={g} style={styles.genrePill}>{g}</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Summary */}
+              {meta.summary && (
+                <p style={styles.summary}>{meta.summary}</p>
+              )}
+
+              {/* Audio tracks */}
+              {meta.audioTracks.length > 1 && (
+                <div style={styles.trackSection}>
+                  <label style={styles.trackLabel}>Audio</label>
+                  <div style={styles.chips}>
+                    {meta.audioTracks.map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => setSelectedAudio(t.id)}
+                        style={{
+                          ...styles.chip,
+                          ...(t.id === selectedAudio ? styles.chipActive : {}),
+                        }}
+                      >
+                        {t.title}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Subtitle tracks */}
+              {meta.subtitleTracks.length > 0 && (
+                <div style={styles.trackSection}>
+                  <label style={styles.trackLabel}>Subtitles</label>
+                  <div style={styles.chips}>
+                    <button
+                      onClick={() => setSelectedSubtitle(null)}
+                      style={{
+                        ...styles.chip,
+                        ...(selectedSubtitle === null ? styles.chipActive : {}),
+                      }}
+                    >
+                      None
+                    </button>
+                    {meta.subtitleTracks.map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => setSelectedSubtitle(t.id)}
+                        style={{
+                          ...styles.chip,
+                          ...(t.id === selectedSubtitle ? styles.chipActive : {}),
+                        }}
+                      >
+                        {t.title}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {error && <p style={styles.errorText}>{error}</p>}
+
+              {/* Play / Waiting */}
+              <div style={styles.actions}>
+                {isHost ? (
+                  <button onClick={handlePlay} style={styles.playBtn}>
+                    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" style={{ marginRight: 8 }}>
+                      <path d="M5 3.5L18 11L5 18.5V3.5Z" fill="currentColor"/>
+                    </svg>
+                    Play
+                  </button>
+                ) : (
+                  <p style={styles.waitingText}>Waiting for the host to start playback...</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={styles.loadingWrap}>
+          <p style={styles.loadingText}>Failed to load metadata</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const styles: Record<string, React.CSSProperties> = {
+  page: {
+    position: "relative",
+    minHeight: "100vh",
+    background: "#0d0d0d",
+    overflow: "hidden",
+  },
+  backdropWrap: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: "60vh",
+    overflow: "hidden",
+  },
+  backdropImg: {
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    filter: "blur(20px) brightness(0.3)",
+    transform: "scale(1.1)",
+  },
+  backdropOverlay: {
+    position: "absolute",
+    inset: 0,
+    background: "linear-gradient(to bottom, rgba(13,13,13,0.3) 0%, #0d0d0d 100%)",
+  },
+  backBtn: {
+    position: "relative",
+    zIndex: 10,
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    margin: "16px 24px",
+    padding: "8px 16px",
+    borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.1)",
+    background: "rgba(255,255,255,0.05)",
+    color: "#f0f0f0",
+    cursor: "pointer",
+    fontSize: "14px",
+    fontWeight: 500,
+    fontFamily: "inherit",
+    backdropFilter: "blur(12px)",
+  },
+  loadingWrap: {
+    position: "relative",
+    zIndex: 10,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: "50vh",
+    gap: "16px",
+  },
+  spinner: {
+    width: "32px",
+    height: "32px",
+    border: "3px solid rgba(255,255,255,0.1)",
+    borderTopColor: "#e5a00d",
+    borderRadius: "50%",
+    animation: "spin 0.8s linear infinite",
+  },
+  loadingText: {
+    color: "#888",
+    fontSize: "15px",
+  },
+  content: {
+    position: "relative",
+    zIndex: 10,
+    maxWidth: "1100px",
+    margin: "0 auto",
+    padding: "0 24px 48px",
+  },
+  layout: {
+    display: "flex",
+    gap: "36px",
+    alignItems: "flex-start",
+  },
+  posterWrap: {
+    flexShrink: 0,
+    width: "240px",
+    borderRadius: "12px",
+    overflow: "hidden",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+  },
+  poster: {
+    width: "100%",
+    display: "block",
+    aspectRatio: "2/3",
+    objectFit: "cover",
+  },
+  info: {
+    flex: 1,
+    minWidth: 0,
+    paddingTop: "8px",
+  },
+  title: {
+    fontSize: "32px",
+    fontWeight: 700,
+    lineHeight: 1.15,
+    letterSpacing: "-0.02em",
+    color: "#f0f0f0",
+    marginBottom: "12px",
+  },
+  metaRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    marginBottom: "16px",
+  },
+  metaItem: {
+    fontSize: "15px",
+    color: "#888",
+    fontWeight: 500,
+  },
+  metaDot: {
+    color: "#555",
+    fontSize: "15px",
+  },
+  genres: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+    marginBottom: "20px",
+  },
+  genrePill: {
+    padding: "4px 12px",
+    borderRadius: "20px",
+    background: "rgba(255,255,255,0.07)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    color: "#aaa",
+    fontSize: "13px",
+    fontWeight: 500,
+  },
+  summary: {
+    fontSize: "15px",
+    lineHeight: 1.6,
+    color: "#999",
+    marginBottom: "28px",
+    display: "-webkit-box",
+    WebkitLineClamp: 4,
+    WebkitBoxOrient: "vertical",
+    overflow: "hidden",
+  },
+  trackSection: {
+    marginBottom: "20px",
+  },
+  trackLabel: {
+    display: "block",
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "#888",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+    marginBottom: "8px",
+  },
+  chips: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+  },
+  chip: {
+    padding: "7px 16px",
+    borderRadius: "20px",
+    border: "1px solid rgba(255,255,255,0.1)",
+    background: "rgba(255,255,255,0.05)",
+    color: "#ccc",
+    cursor: "pointer",
+    fontSize: "13px",
+    fontWeight: 500,
+    fontFamily: "inherit",
+    transition: "all 0.15s ease",
+  },
+  chipActive: {
+    background: "rgba(229,160,13,0.15)",
+    borderColor: "#e5a00d",
+    color: "#e5a00d",
+    fontWeight: 600,
+  },
+  actions: {
+    marginTop: "28px",
+  },
+  playBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "14px 36px",
+    borderRadius: "12px",
+    border: "none",
+    background: "#e5a00d",
+    color: "#000",
+    fontSize: "16px",
+    fontWeight: 700,
+    fontFamily: "inherit",
+    cursor: "pointer",
+    transition: "transform 0.15s ease, box-shadow 0.15s ease",
+    boxShadow: "0 4px 20px rgba(229,160,13,0.3)",
+  },
+  waitingText: {
+    color: "#888",
+    fontSize: "15px",
+    fontStyle: "italic",
+  },
+  errorText: {
+    color: "#e74c3c",
+    fontSize: "14px",
+    marginBottom: "8px",
+  },
+};

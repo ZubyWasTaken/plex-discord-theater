@@ -1,15 +1,36 @@
 import type { PlexItem } from "../lib/api";
+import { getSessionToken } from "../lib/api";
 
 interface MovieCardProps {
   item: PlexItem;
   onClick: (item: PlexItem) => void;
 }
 
+function authThumbUrl(thumb: string): string {
+  const token = getSessionToken();
+  if (!token) return thumb;
+  const sep = thumb.includes("?") ? "&" : "?";
+  return `${thumb}${sep}token=${encodeURIComponent(token)}`;
+}
+
 export function MovieCard({ item, onClick }: MovieCardProps) {
   return (
-    <button onClick={() => onClick(item)} style={styles.card}>
+    <button
+      onClick={() => onClick(item)}
+      style={styles.card}
+      onMouseEnter={(e) => {
+        const el = e.currentTarget;
+        el.style.transform = "scale(1.03)";
+        el.style.boxShadow = "0 4px 24px rgba(229,160,13,0.12)";
+      }}
+      onMouseLeave={(e) => {
+        const el = e.currentTarget;
+        el.style.transform = "scale(1)";
+        el.style.boxShadow = "none";
+      }}
+    >
       {item.thumb ? (
-        <img src={item.thumb} alt={item.title} style={styles.poster} />
+        <img src={authThumbUrl(item.thumb)} alt={item.title} style={styles.poster} loading="lazy" />
       ) : (
         <div style={styles.placeholder}>No Poster</div>
       )}
@@ -23,15 +44,16 @@ export function MovieCard({ item, onClick }: MovieCardProps) {
 
 const styles: Record<string, React.CSSProperties> = {
   card: {
-    background: "#16213e",
-    borderRadius: "8px",
+    background: "#141414",
+    borderRadius: "10px",
     overflow: "hidden",
     cursor: "pointer",
-    border: "none",
+    border: "1px solid rgba(255,255,255,0.06)",
     color: "inherit",
     textAlign: "left",
-    transition: "transform 0.15s",
+    transition: "transform 0.2s ease, box-shadow 0.2s ease",
     width: "100%",
+    fontFamily: "inherit",
   },
   poster: {
     width: "100%",
@@ -45,23 +67,26 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    background: "#0f3460",
-    color: "#666",
-    fontSize: "14px",
+    background: "rgba(255,255,255,0.03)",
+    color: "#555",
+    fontSize: "13px",
+    fontWeight: 500,
   },
   info: {
-    padding: "8px",
+    padding: "10px 10px 12px",
   },
   title: {
-    fontSize: "14px",
+    fontSize: "13px",
     fontWeight: 600,
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
+    color: "#e0e0e0",
   },
   year: {
     fontSize: "12px",
-    color: "#888",
-    marginTop: "2px",
+    color: "#666",
+    marginTop: "3px",
+    fontWeight: 500,
   },
 };

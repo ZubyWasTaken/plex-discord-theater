@@ -1,7 +1,9 @@
 import { Router, type Request, type Response } from "express";
-import { plexFetch, plexJSON } from "../services/plex.js";
+import { plexFetch, plexJSON, plexUrl } from "../services/plex.js";
+import * as thumbCache from "../services/thumb-cache.js";
 
 const router = Router();
+const DEBUG = process.env.NODE_ENV !== "production";
 
 function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -17,6 +19,7 @@ const ALLOWED_IMAGE_TYPES = new Set([
   "image/gif",
   "image/webp",
 ]);
+
 
 const ALLOWED_MEDIA_TYPES = new Set([
   "video/MP2T",
@@ -38,6 +41,28 @@ interface PlexDirectory {
   type: string;
 }
 
+interface PlexStream {
+  id: number;
+  streamType: number;
+  codec?: string;
+  channels?: number;
+  language?: string;
+  languageCode?: string;
+  displayTitle?: string;
+  extendedDisplayTitle?: string;
+  title?: string;
+  selected?: boolean;
+}
+
+interface PlexPart {
+  id: number;
+  Stream?: PlexStream[];
+}
+
+interface PlexMedia {
+  Part?: PlexPart[];
+}
+
 interface PlexMetadataItem {
   ratingKey: string;
   title: string;
@@ -48,6 +73,7 @@ interface PlexMetadataItem {
   duration?: number;
   art?: string;
   Genre?: Array<{ tag: string }>;
+  Media?: PlexMedia[];
 }
 
 // ─── Library browsing ────────────────────────────────────────────
@@ -56,15 +82,19 @@ interface PlexMetadataItem {
  * GET /api/plex/sections
  * List all library sections (Movies, TV Shows, etc.)
  */
+const ALLOWED_SECTION_TYPES = new Set(["movie"]);
+
 router.get("/sections", async (_req: Request, res: Response) => {
   try {
     const data = await plexJSON<{ MediaContainer: { Directory?: PlexDirectory[] } }>("/library/sections");
     const directories = data.MediaContainer.Directory || [];
-    const sections = directories.map((d) => ({
-      id: d.key,
-      title: d.title,
-      type: d.type,
-    }));
+    const sections = directories
+      .filter((d) => ALLOWED_SECTION_TYPES.has(d.type))
+      .map((d) => ({
+        id: d.key,
+        title: d.title,
+        type: d.type,
+      }));
     res.json({ sections });
   } catch (err) {
     console.error("Sections error:", err);
@@ -73,10 +103,10 @@ router.get("/sections", async (_req: Request, res: Response) => {
 });
 
 /**
- * GET /api/plex/sections/:id/all
- * List all items in a library section.
+ * GET /api/plex/sections/:id/genres
+ * List all genres available in a library section.
  */
-router.get("/sections/:id/all", async (req: Request, res: Response) => {
+router.get("/sections/:id/genres", async (req: Request, res: Response) => {
   const id = req.params.id as string;
   if (!NUMERIC_RE.test(id)) {
     res.status(400).json({ error: "Invalid section ID" });
@@ -84,11 +114,80 @@ router.get("/sections/:id/all", async (req: Request, res: Response) => {
   }
 
   try {
-    const data = await plexJSON<{ MediaContainer: { Metadata?: PlexMetadataItem[] } }>(
-      `/library/sections/${id}/all`,
-    );
+    const data = await plexJSON<{
+      MediaContainer: { Directory?: Array<{ key: string; title: string }> };
+    }>(`/library/sections/${id}/genre`);
+    const genres = (data.MediaContainer.Directory || []).map((d) => ({
+      id: d.key,
+      title: d.title,
+    }));
+    res.json({ genres });
+  } catch (err) {
+    console.error("Genres error:", err);
+    res.status(502).json({ error: "Failed to fetch genres" });
+  }
+});
+
+/**
+ * GET /api/plex/sections/:id/all
+ * List all items in a library section.
+ * Optional query params:
+ *   genre - comma-separated numeric genre IDs (AND logic)
+ *   sort  - one of: titleSort:asc, year:desc, year:asc, addedAt:desc, rating:desc
+ */
+const ALLOWED_SORTS = new Set([
+  "titleSort:asc",
+  "year:desc",
+  "year:asc",
+  "addedAt:desc",
+  "rating:desc",
+]);
+
+router.get("/sections/:id/all", async (req: Request, res: Response) => {
+  const id = req.params.id as string;
+  if (!NUMERIC_RE.test(id)) {
+    res.status(400).json({ error: "Invalid section ID" });
+    return;
+  }
+
+  const start = Math.max(0, parseInt(req.query.start as string, 10) || 0);
+  const size = Math.min(100, Math.max(1, parseInt(req.query.size as string, 10) || 50));
+
+  const params: Record<string, string> = {
+    "X-Plex-Container-Start": String(start),
+    "X-Plex-Container-Size": String(size),
+  };
+
+  // Genre filter — validate each ID is numeric
+  const genreParam = req.query.genre as string | undefined;
+  if (genreParam) {
+    const ids = genreParam.split(",");
+    if (ids.every((g) => NUMERIC_RE.test(g))) {
+      params.genre = ids.join(",");
+    } else {
+      res.status(400).json({ error: "Invalid genre IDs" });
+      return;
+    }
+  }
+
+  // Sort — whitelist allowed values
+  const sortParam = req.query.sort as string | undefined;
+  if (sortParam) {
+    if (ALLOWED_SORTS.has(sortParam)) {
+      params.sort = sortParam;
+    } else {
+      res.status(400).json({ error: "Invalid sort value" });
+      return;
+    }
+  }
+
+  try {
+    const data = await plexJSON<{
+      MediaContainer: { Metadata?: PlexMetadataItem[]; totalSize?: number };
+    }>(`/library/sections/${id}/all`, params);
     const items = (data.MediaContainer.Metadata || []).map(mapItem);
-    res.json({ items });
+    const totalSize = data.MediaContainer.totalSize ?? items.length;
+    res.json({ items, totalSize, start, size });
   } catch (err) {
     console.error("Section items error:", err);
     res.status(502).json({ error: "Failed to fetch section items" });
@@ -150,6 +249,29 @@ router.get("/meta/:ratingKey", async (req: Request, res: Response) => {
       return;
     }
     const m = metadata[0];
+    const part = m.Media?.[0]?.Part?.[0];
+    const streams = part?.Stream || [];
+    const audioTracks = streams
+      .filter((s) => s.streamType === 2)
+      .map((s) => ({
+        id: s.id,
+        title: s.extendedDisplayTitle || s.displayTitle || s.title || "Unknown",
+        codec: s.codec ?? null,
+        channels: s.channels ?? null,
+        language: s.language ?? null,
+        languageCode: s.languageCode ?? null,
+        selected: !!s.selected,
+      }));
+    const subtitleTracks = streams
+      .filter((s) => s.streamType === 3)
+      .map((s) => ({
+        id: s.id,
+        title: s.extendedDisplayTitle || s.displayTitle || s.title || "Unknown",
+        language: s.language ?? null,
+        languageCode: s.languageCode ?? null,
+        selected: !!s.selected,
+      }));
+
     res.json({
       ratingKey: m.ratingKey,
       title: m.title,
@@ -160,10 +282,49 @@ router.get("/meta/:ratingKey", async (req: Request, res: Response) => {
       art: m.art ? `/api/plex/thumb${m.art}` : null,
       genres: (m.Genre || []).map((g) => g.tag),
       type: m.type,
+      partId: part?.id ?? null,
+      audioTracks,
+      subtitleTracks,
     });
   } catch (err) {
     console.error("Metadata error:", err);
     res.status(502).json({ error: "Failed to fetch metadata" });
+  }
+});
+
+/**
+ * PUT /api/plex/streams/:partId
+ * Set audio/subtitle stream selection on a media part before transcoding.
+ */
+router.put("/streams/:partId", async (req: Request, res: Response) => {
+  const partId = req.params.partId as string;
+  if (!NUMERIC_RE.test(partId)) {
+    res.status(400).json({ error: "Invalid part ID" });
+    return;
+  }
+
+  const { audioStreamID, subtitleStreamID } = req.body ?? {};
+  const params: Record<string, string> = { allParts: "1" };
+  if (audioStreamID != null && NUMERIC_RE.test(String(audioStreamID))) {
+    params.audioStreamID = String(audioStreamID);
+  }
+  if (subtitleStreamID != null) {
+    const id = String(subtitleStreamID);
+    if (id === "0" || NUMERIC_RE.test(id)) {
+      params.subtitleStreamID = id;
+    }
+  }
+
+  try {
+    const plexRes = await plexFetch(`/library/parts/${partId}`, params, undefined, "PUT");
+    if (!plexRes.ok) {
+      res.status(plexRes.status).json({ error: "Failed to set streams" });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Set streams error:", err);
+    res.status(502).json({ error: "Failed to set streams" });
   }
 });
 
@@ -180,6 +341,15 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
     return;
   }
 
+  // Check server-side cache first
+  const cached = thumbCache.get(imagePath);
+  if (cached) {
+    res.setHeader("Content-Type", cached.contentType);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(cached.data);
+    return;
+  }
+
   try {
     const plexRes = await plexFetch(imagePath);
     if (!plexRes.ok) {
@@ -187,14 +357,24 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
       return;
     }
     const contentType = plexRes.headers.get("content-type");
-    if (contentType && ALLOWED_IMAGE_TYPES.has(contentType.split(";")[0])) {
-      res.setHeader("Content-Type", contentType);
-    } else {
-      res.setHeader("Content-Type", "application/octet-stream");
-    }
-    res.setHeader("Cache-Control", "public, max-age=86400");
+    const resolvedType =
+      contentType && ALLOWED_IMAGE_TYPES.has(contentType.split(";")[0])
+        ? contentType
+        : "application/octet-stream";
 
-    await pipeBody(plexRes.body, res);
+    // Buffer the response so we can cache it
+    const data = Buffer.from(await plexRes.arrayBuffer());
+
+    // Store in cache (fire-and-forget, don't block response)
+    try {
+      thumbCache.set(imagePath, resolvedType, data);
+    } catch (cacheErr) {
+      console.error("Thumb cache write error:", cacheErr);
+    }
+
+    res.setHeader("Content-Type", resolvedType);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(data);
   } catch (err) {
     console.error("Thumb proxy error:", err);
     res.status(502).end();
@@ -223,23 +403,45 @@ router.get(
       return;
     }
 
+    // Optional offset (seconds) — used to resume from a position after audio/subtitle switch.
+    // Round to integer — Plex can reject offsets with many decimal places.
+    const offsetSec = Math.round(parseFloat(req.query.offset as string));
+    const offset = Number.isFinite(offsetSec) && offsetSec > 0 ? String(offsetSec) : undefined;
+    // Subtitle mode — "none" when user explicitly disabled subtitles, otherwise "burn"
+    const subtitleMode = req.query.subtitles === "burn" ? "burn" : "none";
+
+    if (DEBUG) console.log("[HLS] Master manifest requested for ratingKey:", ratingKey, "session:", sessionId, offset ? `offset:${offset}s` : "");
     try {
-      const plexRes = await plexFetch(
-        "/video/:/transcode/universal/start.m3u8",
-        {
-          path: `/library/metadata/${ratingKey}`,
-          protocol: "hls",
-          directPlay: "0",
-          directStream: "1",
-          videoResolution: "1920x1080",
-          maxVideoBitrate: "20000",
-          videoQuality: "100",
-          session: sessionId,
-          fastSeek: "1",
-          "X-Plex-Client-Identifier": "plex-discord-theater",
-          "X-Plex-Product": "Plex Discord Theater",
-        },
-      );
+      const params: Record<string, string> = {
+        hasMDE: "1",
+        path: `/library/metadata/${ratingKey}`,
+        mediaIndex: "0",
+        partIndex: "0",
+        protocol: "hls",
+        fastSeek: "1",
+        directPlay: "0",
+        directStream: "1",
+        directStreamAudio: "1",
+        videoResolution: "1920x1080",
+        maxVideoBitrate: "20000",
+        videoQuality: "100",
+        mediaBufferSize: "102400",
+        subtitles: subtitleMode,
+      };
+      if (offset) params.offset = offset;
+
+      const hlsPath = "/video/:/transcode/universal/start.m3u8";
+      const hlsHeaders = {
+        "X-Plex-Session-Identifier": sessionId,
+        "X-Plex-Client-Profile-Extra":
+          "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac)",
+        "X-Plex-Client-Identifier": "plex-discord-theater",
+        "X-Plex-Product": "Plex Discord Theater",
+        "X-Plex-Platform": "Chrome",
+        "X-Plex-Device": "Browser",
+      };
+      if (DEBUG) console.log("[HLS] Plex request URL:", plexUrl(hlsPath, params).replace(/X-Plex-Token=[^&]+/, "X-Plex-Token=***"));
+      const plexRes = await plexFetch(hlsPath, params, hlsHeaders);
 
       if (!plexRes.ok) {
         const text = await plexRes.text();
@@ -250,8 +452,9 @@ router.get(
 
       const m3u8 = await plexRes.text();
       const authToken = req.query.token as string | undefined;
+      const rewritten = rewriteManifestUrls(m3u8, authToken);
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.send(rewriteManifestUrls(m3u8, authToken));
+      res.send(rewritten);
     } catch (err) {
       console.error("HLS start error:", err);
       res.status(502).json({ error: "Failed to start HLS session" });
@@ -260,12 +463,22 @@ router.get(
 );
 
 /**
- * GET /api/plex/hls/seg/*
+ * GET /api/plex/hls/seg?p=<encoded-plex-path>
  * Proxy HLS segments and sub-manifests from Plex.
+ * The Plex path is passed as a query parameter to avoid special characters
+ * (like ":/" in Plex transcode paths) being mangled by proxies.
  */
-router.get("/hls/seg/*", async (req: Request, res: Response) => {
-  const segPath = "/" + (req.params[0] as string);
+router.get("/hls/seg", async (req: Request, res: Response) => {
+  const rawPath = req.query.p;
+  if (!rawPath || typeof rawPath !== "string") {
+    if (DEBUG) console.log("[HLS seg] Missing p param. Query:", req.query);
+    res.status(400).json({ error: "Missing segment path" });
+    return;
+  }
+  const segPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+  if (DEBUG) console.log("[HLS seg] Fetching:", segPath.substring(0, 120));
   if (segPath.length > MAX_PROXY_PATH_LENGTH || !isAllowedProxyPath(segPath)) {
+    if (DEBUG) console.log("[HLS seg] Path rejected by validation");
     res.status(400).end();
     return;
   }
@@ -274,6 +487,7 @@ router.get("/hls/seg/*", async (req: Request, res: Response) => {
     const plexRes = await plexFetch(segPath);
 
     if (!plexRes.ok) {
+      console.error("HLS seg proxy error:", plexRes.status, segPath.substring(0, 100));
       res.status(plexRes.status).end();
       return;
     }
@@ -289,11 +503,12 @@ router.get("/hls/seg/*", async (req: Request, res: Response) => {
       res.setHeader("Content-Type", "application/octet-stream");
     }
 
-    // If this is a sub-manifest, rewrite URLs too
+    // If this is a sub-manifest, rewrite all URLs (including bare filenames like 00000.ts)
     if (segPath.endsWith(".m3u8")) {
       const m3u8 = await plexRes.text();
       const authToken = req.query.token as string | undefined;
-      res.send(rewriteManifestUrls(m3u8, authToken));
+      const baseDir = segPath.substring(0, segPath.lastIndexOf("/") + 1);
+      res.send(rewriteManifestUrls(m3u8, authToken, true, baseDir));
       return;
     }
 
@@ -316,8 +531,9 @@ router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
   }
 
   try {
-    await plexFetch("/video/:/transcode/universal/ping", {
-      session: sessionId,
+    await plexFetch("/video/:/transcode/universal/ping", undefined, {
+      "X-Plex-Session-Identifier": sessionId,
+      "X-Plex-Client-Identifier": "plex-discord-theater",
     });
     res.json({ ok: true });
   } catch (err) {
@@ -340,9 +556,11 @@ router.delete(
     }
 
     try {
-      await plexFetch("/video/:/transcode/universal/stop", {
-        session: sessionId,
+      const stopRes = await plexFetch("/video/:/transcode/universal/stop", undefined, {
+        "X-Plex-Session-Identifier": sessionId,
+        "X-Plex-Client-Identifier": "plex-discord-theater",
       });
+      if (DEBUG) console.log("[HLS] Stop session", sessionId.substring(0, 8), "→", stopRes.status);
       res.json({ ok: true });
     } catch (err) {
       console.error("Stop session error:", err);
@@ -350,6 +568,56 @@ router.delete(
     }
   },
 );
+
+/**
+ * DELETE /api/plex/hls/sessions
+ * Kill ALL active transcode sessions. Useful for flushing stale sessions
+ * that weren't properly stopped (e.g. during development).
+ */
+router.delete("/hls/sessions", async (req: Request, res: Response) => {
+  // Dev-only endpoint — refuse in production unless admin secret is provided
+  const isDev = process.env.NODE_ENV !== "production";
+  const adminSecret = process.env.ADMIN_SECRET;
+  if (!isDev && (!adminSecret || req.headers["x-admin-secret"] !== adminSecret)) {
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  try {
+    const data = await plexJSON<{
+      MediaContainer: {
+        Metadata?: Array<{
+          Session?: { id?: string };
+          TranscodeSession?: { key?: string };
+        }>;
+      };
+    }>("/status/sessions");
+
+    const sessions = data.MediaContainer.Metadata || [];
+    if (DEBUG) console.log("[HLS] Active sessions:", sessions.length);
+
+    let stopped = 0;
+    for (const s of sessions) {
+      const key = s.TranscodeSession?.key;
+      if (key) {
+        try {
+          const stopRes = await plexFetch(`/video/:/transcode/universal/stop`, undefined, {
+            "X-Plex-Session-Identifier": key,
+            "X-Plex-Client-Identifier": "plex-discord-theater",
+          });
+          if (DEBUG) console.log("[HLS] Killed session", key, "→", stopRes.status);
+          stopped++;
+        } catch (err) {
+          console.error("[HLS] Failed to kill session", key, err);
+        }
+      }
+    }
+
+    res.json({ total: sessions.length, stopped });
+  } catch (err) {
+    console.error("Kill sessions error:", err);
+    res.status(502).json({ error: "Failed to fetch/kill sessions" });
+  }
+});
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -385,30 +653,45 @@ function isAllowedProxyPath(p: string): boolean {
 }
 
 /**
- * Rewrite absolute and relative Plex URLs in an m3u8 manifest.
+ * Rewrite Plex URLs in an m3u8 manifest to route through our proxy.
+ *
+ * Master manifests from Plex contain relative paths like:
+ *   session/<id>/base/index.m3u8
+ * These are relative to /video/:/transcode/universal/ on Plex, so we
+ * rewrite them to /api/plex/hls/seg/video/:/transcode/universal/session/...
+ *
+ * Sub-manifests contain bare filenames like "00000.ts" which hls.js
+ * resolves relative to the sub-manifest URL — these are left untouched.
+ *
  * When authToken is provided (Safari native HLS), it is appended to segment URLs
  * so that the auth middleware can validate requests made by the native player.
  */
-function rewriteManifestUrls(m3u8: string, authToken?: string): string {
-  let result = m3u8;
+const TRANSCODE_PREFIX = "/video/:/transcode/universal/";
 
-  const addToken = (url: string) => {
-    if (!authToken) return url;
-    const sep = url.includes("?") ? "&" : "?";
-    return `${url}${sep}token=${encodeURIComponent(authToken)}`;
-  };
+function segProxyUrl(plexPath: string, authToken?: string): string {
+  let url = `/api/plex/hls/seg?p=${encodeURIComponent(plexPath)}`;
+  if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
+  return url;
+}
+
+function rewriteManifestUrls(m3u8: string, authToken?: string, isSubManifest = false, baseDir = ""): string {
+  let result = m3u8;
 
   const cleanPlexToken = (path: string) => path.replace(PLEX_TOKEN_REGEX, "");
 
-  // Reset lastIndex since regexes have the 'g' flag
+  // Rewrite absolute Plex URLs (e.g. http://192.168.0.89:32400/video/...)
   PLEX_URL_REGEX.lastIndex = 0;
   result = result.replace(PLEX_URL_REGEX, (_match: string, path: string) =>
-    addToken(`/api/plex/hls/seg${cleanPlexToken(path)}`),
+    segProxyUrl(cleanPlexToken(path), authToken),
   );
 
+  // Rewrite relative paths in the manifest.
+  // Master manifests: prepend the Plex transcode prefix (e.g. session/<id>/base/index.m3u8)
+  // Sub-manifests: prepend the sub-manifest's base directory (e.g. 00000.ts → full Plex path)
   RELATIVE_URL_REGEX.lastIndex = 0;
+  const prefix = isSubManifest ? baseDir : TRANSCODE_PREFIX;
   result = result.replace(RELATIVE_URL_REGEX, (_match: string, path: string) =>
-    addToken(`/api/plex/hls/seg/${cleanPlexToken(path)}`),
+    segProxyUrl(`${prefix}${cleanPlexToken(path)}`, authToken),
   );
 
   return result;

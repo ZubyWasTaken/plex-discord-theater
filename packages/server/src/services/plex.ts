@@ -25,8 +25,13 @@ export function plexUrl(path: string, params?: Record<string, string>): string {
 export async function plexFetch(
   path: string,
   params?: Record<string, string>,
+  extraHeaders?: Record<string, string>,
+  method?: string,
 ): Promise<Response> {
-  return fetch(plexUrl(path, params), { headers: PLEX_HEADERS });
+  return fetch(plexUrl(path, params), {
+    method,
+    headers: extraHeaders ? { ...PLEX_HEADERS, ...extraHeaders } : PLEX_HEADERS,
+  });
 }
 
 export async function plexJSON<T = unknown>(

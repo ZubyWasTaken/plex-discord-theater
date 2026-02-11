@@ -8,8 +8,9 @@ import { fileURLToPath } from "url";
 import discordRoutes from "./routes/discord.js";
 import plexRoutes from "./routes/plex.js";
 import { requireAuth } from "./middleware/auth.js";
+import * as thumbCache from "./services/thumb-cache.js";
 
-const required = ["DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "PLEX_URL", "PLEX_TOKEN"] as const;
+const required = ["DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "PLEX_URL", "PLEX_TOKEN", "REDIRECT_URI"] as const;
 for (const name of required) {
   if (!process.env[name]) {
     console.error(`Missing required environment variable: ${name}`);
@@ -27,6 +28,7 @@ if (!allowedOrigins || allowedOrigins.length === 0) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+app.set("trust proxy", 1);
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
 app.use(
@@ -34,9 +36,11 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
         mediaSrc: ["'self'"],
         imgSrc: ["'self'"],
-        connectSrc: ["'self'"],
+        connectSrc: ["'self'", "https://discord.com", "https://*.discord.com", "wss://*.discord.gg"],
       },
     },
     frameguard: false, // Allow Discord iframe embedding
@@ -46,15 +50,17 @@ app.use(
 app.use(
   cors({
     origin: allowedOrigins,
-    methods: ["GET", "POST", "DELETE"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
   }),
 );
 
 app.use(express.json({ limit: "10kb" }));
 
+const isDev = process.env.NODE_ENV !== "production";
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: isDev ? 200 : 20,
   message: { error: "Too many authentication attempts" },
   standardHeaders: true,
   legacyHeaders: false,
@@ -62,14 +68,14 @@ const authLimiter = rateLimit({
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: isDev ? 5000 : 300,
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 const hlsLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 3000, // HLS segments: ~1 req/2-10s per stream
+  max: isDev ? 50000 : 3000,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -77,7 +83,19 @@ const hlsLimiter = rateLimit({
 app.use("/api/token", authLimiter);
 app.use("/api/register", authLimiter);
 app.use("/api/plex/hls/seg", hlsLimiter);
-app.use("/api", apiLimiter);
+app.use("/api/plex/hls/ping", hlsLimiter);
+// General API limiter — skip paths that have their own dedicated limiter
+app.use("/api", (req, res, next) => {
+  if (
+    req.path.startsWith("/plex/hls/seg") ||
+    req.path.startsWith("/plex/hls/ping") ||
+    req.path === "/token" ||
+    req.path === "/register"
+  ) {
+    return next();
+  }
+  return apiLimiter(req, res, next);
+});
 
 app.use("/api", discordRoutes);
 app.use("/api/plex", requireAuth, plexRoutes);
@@ -96,7 +114,13 @@ const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
 
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received, shutting down gracefully");
-  server.close(() => process.exit(0));
-});
+function shutdown(signal: string) {
+  console.log(`${signal} received, shutting down gracefully`);
+  server.close(() => {
+    thumbCache.close();
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

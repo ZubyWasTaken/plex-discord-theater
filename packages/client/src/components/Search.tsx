@@ -7,6 +7,7 @@ interface SearchProps {
 
 export function Search({ onSearch, onClear }: SearchProps) {
   const [value, setValue] = useState("");
+  const [focused, setFocused] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const onSearchRef = useRef(onSearch);
   const onClearRef = useRef(onClear);
@@ -35,29 +36,57 @@ export function Search({ onSearch, onClear }: SearchProps) {
 
   return (
     <div style={styles.container}>
-      <input
-        type="text"
-        placeholder="Search your Plex library..."
-        value={value}
-        onChange={handleChange}
-        style={styles.input}
-      />
+      <div style={{
+        ...styles.inputWrap,
+        ...(focused ? styles.inputWrapFocused : {}),
+      }}>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" style={styles.searchIcon}>
+          <circle cx="7.5" cy="7.5" r="5.5" stroke="#666" strokeWidth="1.5"/>
+          <path d="M12 12L16 16" stroke="#666" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+        <input
+          type="text"
+          placeholder="Search your library..."
+          value={value}
+          onChange={handleChange}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          style={styles.input}
+        />
+      </div>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    padding: "16px",
+    padding: "16px 24px",
+  },
+  inputWrap: {
+    display: "flex",
+    alignItems: "center",
+    borderRadius: "10px",
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(255,255,255,0.04)",
+    transition: "all 0.2s ease",
+    overflow: "hidden",
+  },
+  inputWrapFocused: {
+    borderColor: "rgba(229,160,13,0.3)",
+    boxShadow: "0 0 0 3px rgba(229,160,13,0.08), inset 0 1px 4px rgba(0,0,0,0.2)",
+  },
+  searchIcon: {
+    marginLeft: "14px",
+    flexShrink: 0,
   },
   input: {
     width: "100%",
-    padding: "12px 16px",
-    fontSize: "16px",
-    borderRadius: "8px",
-    border: "1px solid #333",
-    background: "#16213e",
-    color: "#e0e0e0",
+    padding: "12px 14px",
+    fontSize: "15px",
+    border: "none",
+    background: "transparent",
+    color: "#f0f0f0",
     outline: "none",
+    fontFamily: "inherit",
   },
 };

@@ -29,6 +29,7 @@ export function useDiscord(): DiscordState {
     const init = async () => {
       try {
         const sdk = new DiscordSDK(CLIENT_ID);
+
         await sdk.ready();
 
         const { code } = await sdk.commands.authorize({
@@ -57,6 +58,7 @@ export function useDiscord(): DiscordState {
           {
             instanceId: sdk.instanceId,
             userId: user.id,
+            guildId: sdk.guildId,
           },
         );
 
@@ -68,8 +70,8 @@ export function useDiscord(): DiscordState {
           error: null,
         });
       } catch (err) {
-        console.error("Discord SDK init failed:", err);
-        const message = err instanceof Error ? err.message : "Failed to connect to Discord";
+        console.error("Discord SDK init failed:", JSON.stringify(err, null, 2), err);
+        const message = err instanceof Error ? err.message : JSON.stringify(err);
         setState((prev) => ({
           ...prev,
           error: message,

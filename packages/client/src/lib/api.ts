@@ -10,6 +10,16 @@ export function getSessionToken(): string | null {
 
 const BASE = "";
 
+async function throwApiError(res: Response, path: string): Promise<never> {
+  try {
+    const body = await res.json();
+    if (body.error && typeof body.error === "string") throw new Error(body.error);
+  } catch (e) {
+    if (e instanceof Error && e.message !== `API error ${res.status}: ${path}`) throw e;
+  }
+  throw new Error(`API error ${res.status}: ${path}`);
+}
+
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
   if (sessionToken) headers["Authorization"] = `Bearer ${sessionToken}`;
@@ -24,7 +34,7 @@ export async function apiGet<T = unknown>(
     headers: authHeaders(),
     signal: options?.signal,
   });
-  if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
+  if (!res.ok) await throwApiError(res, path);
   return res.json();
 }
 
@@ -37,7 +47,20 @@ export async function apiPost<T = unknown>(
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
+  if (!res.ok) await throwApiError(res, path);
+  return res.json();
+}
+
+export async function apiPut<T = unknown>(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res, path);
   return res.json();
 }
 
@@ -46,7 +69,7 @@ export async function apiDelete(path: string): Promise<void> {
     method: "DELETE",
     headers: authHeaders(),
   });
-  if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
+  if (!res.ok) await throwApiError(res, path);
 }
 
 export interface PlexItem {
@@ -63,6 +86,21 @@ export interface PlexSection {
   type: string;
 }
 
+export interface Genre {
+  id: string;
+  title: string;
+}
+
+export interface StreamTrack {
+  id: number;
+  title: string;
+  codec?: string | null;
+  channels?: number | null;
+  language?: string | null;
+  languageCode?: string | null;
+  selected: boolean;
+}
+
 export interface PlexMeta {
   ratingKey: string;
   title: string;
@@ -73,17 +111,30 @@ export interface PlexMeta {
   art: string | null;
   genres: string[];
   type: string;
+  partId: number | null;
+  audioTracks: StreamTrack[];
+  subtitleTracks: StreamTrack[];
 }
 
 export function fetchSections(): Promise<{ sections: PlexSection[] }> {
   return apiGet("/api/plex/sections");
 }
 
+export function fetchGenres(sectionId: string): Promise<{ genres: Genre[] }> {
+  return apiGet(`/api/plex/sections/${encodeURIComponent(sectionId)}/genres`);
+}
+
 export function fetchSectionItems(
   sectionId: string,
-  options?: { signal?: AbortSignal },
-): Promise<{ items: PlexItem[] }> {
-  return apiGet(`/api/plex/sections/${encodeURIComponent(sectionId)}/all`, options);
+  options?: { signal?: AbortSignal; start?: number; size?: number; genre?: string[]; sort?: string },
+): Promise<{ items: PlexItem[]; totalSize: number; start: number; size: number }> {
+  const params = new URLSearchParams();
+  if (options?.start != null) params.set("start", String(options.start));
+  if (options?.size != null) params.set("size", String(options.size));
+  if (options?.genre && options.genre.length > 0) params.set("genre", options.genre.join(","));
+  if (options?.sort) params.set("sort", options.sort);
+  const qs = params.toString();
+  return apiGet(`/api/plex/sections/${encodeURIComponent(sectionId)}/all${qs ? `?${qs}` : ""}`, options);
 }
 
 export function searchPlex(query: string): Promise<{ items: PlexItem[] }> {
@@ -94,12 +145,27 @@ export function fetchMeta(ratingKey: string): Promise<PlexMeta> {
   return apiGet(`/api/plex/meta/${encodeURIComponent(ratingKey)}`);
 }
 
-export function hlsMasterUrl(ratingKey: string, sessionId: string): string {
-  return `/api/plex/hls/${encodeURIComponent(ratingKey)}/${encodeURIComponent(sessionId)}/master.m3u8`;
+export function hlsMasterUrl(
+  ratingKey: string,
+  sessionId: string,
+  options?: { offset?: number; subtitles?: boolean },
+): string {
+  const params = new URLSearchParams();
+  if (options?.offset != null && options.offset > 0) params.set("offset", String(options.offset));
+  params.set("subtitles", options?.subtitles ? "burn" : "none");
+  const qs = params.toString();
+  return `/api/plex/hls/${encodeURIComponent(ratingKey)}/${encodeURIComponent(sessionId)}/master.m3u8${qs ? `?${qs}` : ""}`;
 }
 
-export function pingSession(sessionId: string): Promise<void> {
-  return apiGet(`/api/plex/hls/ping/${encodeURIComponent(sessionId)}`);
+export function setStreams(
+  partId: number,
+  options: { audioStreamID?: number; subtitleStreamID?: number },
+): Promise<{ ok: boolean }> {
+  return apiPut(`/api/plex/streams/${partId}`, options);
+}
+
+export async function pingSession(sessionId: string): Promise<void> {
+  await apiGet(`/api/plex/hls/ping/${encodeURIComponent(sessionId)}`);
 }
 
 export function stopSession(sessionId: string): Promise<void> {

@@ -1,10 +1,29 @@
 services:
   app:
+    container_name: plex-discord-theater
     build:
       context: .
       args:
         VITE_DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
     ports:
-      - "3000:3000"
+      - "${PORT:-2001}:${PORT:-2001}"
     env_file: .env
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - thumb_cache:/app/packages/server/data
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+volumes:
+  thumb_cache:
+    driver: local

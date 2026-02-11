@@ -3,15 +3,26 @@ import { createSession } from "../middleware/auth.js";
 
 const router = Router();
 
+/** Comma-separated guild IDs that are allowed to use this activity */
+const ALLOWED_GUILD_IDS = new Set(
+  (process.env.ALLOWED_GUILD_IDS || "").split(",").map((s) => s.trim()).filter(Boolean),
+);
+
 const INSTANCE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_INSTANCES = 10_000;
-const instanceHosts = new Map<string, { hostUserId: string; createdAt: number }>();
+const instanceHosts = new Map<string, { hostUserId: string; guildId: string; createdAt: number }>();
+/** Maps guildId → active instanceId (one activity per server) */
+const guildInstances = new Map<string, string>();
 
 function pruneStaleInstances(): void {
   const now = Date.now();
   for (const [id, entry] of instanceHosts) {
     if (now - entry.createdAt > INSTANCE_TTL_MS) {
       instanceHosts.delete(id);
+      // Clean up guild mapping too
+      if (guildInstances.get(entry.guildId) === id) {
+        guildInstances.delete(entry.guildId);
+      }
     }
   }
 }
@@ -43,6 +54,7 @@ router.post("/token", async (req: Request, res: Response) => {
         client_secret: process.env.DISCORD_CLIENT_SECRET!,
         grant_type: "authorization_code",
         code,
+        redirect_uri: process.env.REDIRECT_URI!,
       }),
     });
 
@@ -79,23 +91,37 @@ router.post("/token", async (req: Request, res: Response) => {
  * Register the first user per instanceId as the host.
  */
 router.post("/register", (req: Request, res: Response) => {
-  const { instanceId, userId } = req.body;
-  if (!instanceId || !userId) {
-    res.status(400).json({ error: "Missing instanceId or userId" });
+  const { instanceId, userId, guildId } = req.body;
+  if (!instanceId || !userId || !guildId) {
+    res.status(400).json({ error: "Missing instanceId, userId, or guildId" });
     return;
   }
 
-  if (typeof instanceId !== "string" || typeof userId !== "string") {
+  if (typeof instanceId !== "string" || typeof userId !== "string" || typeof guildId !== "string") {
     res.status(400).json({ error: "Invalid parameter types" });
     return;
   }
 
-  if (instanceId.length > 200 || userId.length > 200) {
+  if (instanceId.length > 200 || userId.length > 200 || guildId.length > 200) {
     res.status(400).json({ error: "Parameters too long" });
     return;
   }
 
   pruneStaleInstances();
+
+  // Reject guilds not in the allowlist
+  if (ALLOWED_GUILD_IDS.size > 0 && !ALLOWED_GUILD_IDS.has(guildId)) {
+    res.status(403).json({ error: "This server is not authorized to use this activity." });
+    return;
+  }
+
+  // One active instance per guild — replace stale instances instead of blocking
+  const existingInstanceId = guildInstances.get(guildId);
+  if (existingInstanceId && existingInstanceId !== instanceId && instanceHosts.has(existingInstanceId)) {
+    // Remove the old instance so the new one can take over
+    instanceHosts.delete(existingInstanceId);
+    guildInstances.delete(guildId);
+  }
 
   if (instanceHosts.size >= MAX_INSTANCES) {
     // Evict oldest 10% before rejecting
@@ -103,15 +129,29 @@ router.post("/register", (req: Request, res: Response) => {
     const oldest = [...instanceHosts.entries()]
       .sort((a, b) => a[1].createdAt - b[1].createdAt)
       .slice(0, toEvict);
-    for (const [id] of oldest) instanceHosts.delete(id);
+    for (const [id, entry] of oldest) {
+      if (guildInstances.get(entry.guildId) === id) {
+        guildInstances.delete(entry.guildId);
+      }
+      instanceHosts.delete(id);
+    }
   }
 
   if (!instanceHosts.has(instanceId)) {
-    instanceHosts.set(instanceId, { hostUserId: userId, createdAt: Date.now() });
+    instanceHosts.set(instanceId, { hostUserId: userId, guildId, createdAt: Date.now() });
+    guildInstances.set(guildId, instanceId);
   }
 
   const hostId = instanceHosts.get(instanceId)!.hostUserId;
   res.json({ isHost: hostId === userId, hostId });
 });
+
+/** Check if a userId is host for any active instance. */
+export function isUserHost(userId: string): boolean {
+  for (const entry of instanceHosts.values()) {
+    if (entry.hostUserId === userId) return true;
+  }
+  return false;
+}
 
 export default router;

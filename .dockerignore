@@ -1,31 +1,18 @@
-# Dependencies
 node_modules/
-
-# Build output
 dist/
 *.tsbuildinfo
-
-# Environment
 .env
 .env.local
 .env.*.local
-
-# OS files
+.git/
+.gitignore
 .DS_Store
-Thumbs.db
-
-# IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# Logs
 *.log
 npm-debug.log*
-
-# Vite
 packages/client/.vite/
-
-# Server data (thumbnail cache, etc.)
 packages/server/data/
+plex_docs.json
+README.md
+bun.lock
