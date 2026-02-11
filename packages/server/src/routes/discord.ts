@@ -10,7 +10,7 @@ const ALLOWED_GUILD_IDS = new Set(
 
 const INSTANCE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_INSTANCES = 10_000;
-const instanceHosts = new Map<string, { hostUserId: string; guildId: string; createdAt: number }>();
+export const instanceHosts = new Map<string, { hostUserId: string; guildId: string; createdAt: number }>();
 /** Maps guildId → active instanceId (one activity per server) */
 const guildInstances = new Map<string, string>();
 

@@ -9,6 +9,7 @@ import discordRoutes from "./routes/discord.js";
 import plexRoutes from "./routes/plex.js";
 import { requireAuth } from "./middleware/auth.js";
 import * as thumbCache from "./services/thumb-cache.js";
+import { attachWebSocketServer, closeWebSocketServer } from "./services/sync.js";
 
 const required = ["DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET", "PLEX_URL", "PLEX_TOKEN", "REDIRECT_URI"] as const;
 for (const name of required) {
@@ -40,7 +41,7 @@ app.use(
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
         mediaSrc: ["'self'"],
         imgSrc: ["'self'"],
-        connectSrc: ["'self'", "https://discord.com", "https://*.discord.com", "wss://*.discord.gg"],
+        connectSrc: ["'self'", "https://discord.com", "https://*.discord.com", "wss://*.discord.gg", "wss:", "ws:"],
       },
     },
     frameguard: false, // Allow Discord iframe embedding
@@ -114,9 +115,12 @@ const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
 
+attachWebSocketServer(server);
+
 function shutdown(signal: string) {
   console.log(`${signal} received, shutting down gracefully`);
   server.close(() => {
+    closeWebSocketServer();
     thumbCache.close();
     process.exit(0);
   });

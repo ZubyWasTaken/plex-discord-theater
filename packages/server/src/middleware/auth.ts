@@ -32,6 +32,16 @@ export function createSession(): string {
   return token;
 }
 
+export function isValidSession(token: string): boolean {
+  const session = sessions.get(token);
+  if (!session) return false;
+  if (Date.now() - session.createdAt > SESSION_TTL_MS) {
+    sessions.delete(token);
+    return false;
+  }
+  return true;
+}
+
 export function requireAuth(
   req: Request,
   res: Response,

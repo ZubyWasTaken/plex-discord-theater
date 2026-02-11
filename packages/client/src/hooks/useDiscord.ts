@@ -7,6 +7,7 @@ interface DiscordState {
   isHost: boolean;
   userId: string | null;
   username: string | null;
+  instanceId: string | null;
   error: string | null;
 }
 
@@ -18,6 +19,7 @@ export function useDiscord(): DiscordState {
     isHost: false,
     userId: null,
     username: null,
+    instanceId: null,
     error: null,
   });
   const initRef = useRef(false);
@@ -67,6 +69,7 @@ export function useDiscord(): DiscordState {
           isHost,
           userId: user.id,
           username: user.username,
+          instanceId: sdk.instanceId,
           error: null,
         });
       } catch (err) {

@@ -5,6 +5,9 @@ interface ControlsProps {
   isHost: boolean;
   title: string;
   onBack: () => void;
+  onSyncPause?: (position: number) => void;
+  onSyncResume?: (position: number) => void;
+  onSyncSeek?: (position: number) => void;
 }
 
 function fmt(seconds: number): string {
@@ -18,7 +21,7 @@ function fmt(seconds: number): string {
 
 const HIDE_DELAY_MS = 3000;
 
-export function Controls({ videoRef, isHost, title, onBack }: ControlsProps) {
+export function Controls({ videoRef, isHost, title, onBack, onSyncPause, onSyncResume, onSyncSeek }: ControlsProps) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -85,9 +88,14 @@ export function Controls({ videoRef, isHost, title, onBack }: ControlsProps) {
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video || !isHost) return;
-    if (video.paused) video.play();
-    else video.pause();
-  }, [videoRef, isHost]);
+    if (video.paused) {
+      video.play();
+      onSyncResume?.(video.currentTime);
+    } else {
+      video.pause();
+      onSyncPause?.(video.currentTime);
+    }
+  }, [videoRef, isHost, onSyncPause, onSyncResume]);
 
   const seek = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -95,9 +103,11 @@ export function Controls({ videoRef, isHost, title, onBack }: ControlsProps) {
       if (!duration || !isFinite(duration)) return;
       const rect = progressRef.current.getBoundingClientRect();
       const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      videoRef.current.currentTime = pct * duration;
+      const newTime = pct * duration;
+      videoRef.current.currentTime = newTime;
+      onSyncSeek?.(newTime);
     },
-    [isHost, duration, videoRef],
+    [isHost, duration, videoRef, onSyncSeek],
   );
 
   const handleVolume = useCallback(

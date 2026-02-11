@@ -1,5 +1,6 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useDiscord } from "./hooks/useDiscord";
+import { useSync } from "./hooks/useSync";
 import { Library } from "./components/Library";
 import { MovieDetail } from "./components/MovieDetail";
 import { Player } from "./components/Player";
@@ -11,8 +12,45 @@ type View =
   | { kind: "player"; item: PlexItem; subtitles: boolean };
 
 export function App() {
-  const { isReady, isHost, username, error } = useDiscord();
+  const { isReady, isHost, userId, username, instanceId, error } = useDiscord();
   const [view, setView] = useState<View>({ kind: "library" });
+
+  const { state: syncState, actions: syncActions } = useSync({
+    instanceId,
+    userId,
+    enabled: isReady,
+  });
+
+  // Track previous ratingKey to detect changes
+  const prevRatingKeyRef = useRef<string | null>(null);
+
+  // Viewer: auto-navigate when host starts or stops playback
+  useEffect(() => {
+    if (isHost) return;
+
+    const prevKey = prevRatingKeyRef.current;
+    const newKey = syncState.ratingKey;
+    prevRatingKeyRef.current = newKey;
+
+    // Host started playing — navigate viewer to player
+    if (newKey && newKey !== prevKey) {
+      setView({
+        kind: "player",
+        item: {
+          ratingKey: newKey,
+          title: syncState.title || "Untitled",
+          type: "movie",
+          thumb: null,
+        },
+        subtitles: syncState.subtitles,
+      });
+    }
+
+    // Host stopped — navigate viewer back to library
+    if (!newKey && prevKey) {
+      setView({ kind: "library" });
+    }
+  }, [isHost, syncState.ratingKey, syncState.title, syncState.subtitles]);
 
   const handleSelect = useCallback((item: PlexItem) => {
     setView({ kind: "detail", item });
@@ -52,8 +90,14 @@ export function App() {
             <h1 style={styles.logo}>Watch Together</h1>
             <span style={styles.user}>
               {username} {isHost ? "(Host)" : "(Viewer)"}
+              {!isHost && syncState.connected && " \u2022 Synced"}
             </span>
           </header>
+          {!isHost && !syncState.ratingKey && (
+            <div style={styles.waitingBanner}>
+              Waiting for host to start playback...
+            </div>
+          )}
           <Library isHost={isHost} onSelect={handleSelect} />
         </>
       )}
@@ -73,6 +117,8 @@ export function App() {
           isHost={isHost}
           subtitles={view.subtitles}
           onBack={handleBack}
+          syncState={syncState}
+          syncActions={syncActions}
         />
       )}
     </div>
@@ -132,5 +178,14 @@ const styles: Record<string, React.CSSProperties> = {
   hint: {
     fontSize: "14px",
     color: "#888",
+  },
+  waitingBanner: {
+    textAlign: "center",
+    padding: "12px 24px",
+    background: "rgba(229,160,13,0.1)",
+    color: "#e5a00d",
+    fontSize: "14px",
+    fontWeight: 500,
+    borderBottom: "1px solid rgba(229,160,13,0.2)",
   },
 };
