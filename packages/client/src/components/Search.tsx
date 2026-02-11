@@ -8,6 +8,11 @@ interface SearchProps {
 export function Search({ onSearch, onClear }: SearchProps) {
   const [value, setValue] = useState("");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const onSearchRef = useRef(onSearch);
+  const onClearRef = useRef(onClear);
+
+  useEffect(() => { onSearchRef.current = onSearch; }, [onSearch]);
+  useEffect(() => { onClearRef.current = onClear; }, [onClear]);
 
   useEffect(() => {
     return () => clearTimeout(debounceRef.current);
@@ -20,12 +25,12 @@ export function Search({ onSearch, onClear }: SearchProps) {
 
       clearTimeout(debounceRef.current);
       if (q.trim().length === 0) {
-        onClear();
+        onClearRef.current();
         return;
       }
-      debounceRef.current = setTimeout(() => onSearch(q.trim()), 400);
+      debounceRef.current = setTimeout(() => onSearchRef.current(q.trim()), 400);
     },
-    [onSearch, onClear],
+    [],
   );
 
   return (

@@ -25,7 +25,8 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY packages/server/package.json packages/server/
-COPY packages/client/package.json packages/client/
+# Minimal client package.json so the workspace resolves without installing client deps
+RUN mkdir -p packages/client && echo '{"name":"@plex-discord-theater/client","private":true}' > packages/client/package.json
 RUN npm ci --omit=dev
 
 COPY --from=build /app/packages/server/dist packages/server/dist

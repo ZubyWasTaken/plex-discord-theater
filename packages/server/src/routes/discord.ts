@@ -1,8 +1,10 @@
 import { Router, type Request, type Response } from "express";
+import { createSession } from "../middleware/auth.js";
 
 const router = Router();
 
 const INSTANCE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_INSTANCES = 10_000;
 const instanceHosts = new Map<string, { hostUserId: string; createdAt: number }>();
 
 function pruneStaleInstances(): void {
@@ -14,14 +16,21 @@ function pruneStaleInstances(): void {
   }
 }
 
+// Periodic pruning every 5 minutes
+setInterval(pruneStaleInstances, 5 * 60 * 1000).unref();
+
 /**
  * POST /api/token
  * Exchange Discord OAuth2 authorization code for access token.
  */
 router.post("/token", async (req: Request, res: Response) => {
   const { code } = req.body;
-  if (!code) {
+  if (!code || typeof code !== "string") {
     res.status(400).json({ error: "Missing authorization code" });
+    return;
+  }
+  if (code.length > 256) {
+    res.status(400).json({ error: "Invalid authorization code" });
     return;
   }
 
@@ -39,12 +48,26 @@ router.post("/token", async (req: Request, res: Response) => {
 
     if (!response.ok) {
       console.error("Discord token exchange failed:", response.status);
-      res.status(response.status).json({ error: "Token exchange failed" });
+      const clientStatus = response.status >= 500 ? 502 : 400;
+      res.status(clientStatus).json({ error: "Token exchange failed" });
       return;
     }
 
-    const data = await response.json();
-    res.json({ access_token: data.access_token });
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      console.error("Failed to parse Discord token response");
+      res.status(502).json({ error: "Invalid response from Discord" });
+      return;
+    }
+    if (!data.access_token || typeof data.access_token !== "string") {
+      console.error("Discord response missing access_token");
+      res.status(502).json({ error: "Invalid response from Discord" });
+      return;
+    }
+    const sessionToken = createSession();
+    res.json({ access_token: data.access_token, session_token: sessionToken });
   } catch (err) {
     console.error("Token exchange error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -73,6 +96,15 @@ router.post("/register", (req: Request, res: Response) => {
   }
 
   pruneStaleInstances();
+
+  if (instanceHosts.size >= MAX_INSTANCES) {
+    // Evict oldest 10% before rejecting
+    const toEvict = Math.max(1, Math.floor(MAX_INSTANCES * 0.1));
+    const oldest = [...instanceHosts.entries()]
+      .sort((a, b) => a[1].createdAt - b[1].createdAt)
+      .slice(0, toEvict);
+    for (const [id] of oldest) instanceHosts.delete(id);
+  }
 
   if (!instanceHosts.has(instanceId)) {
     instanceHosts.set(instanceId, { hostUserId: userId, createdAt: Date.now() });

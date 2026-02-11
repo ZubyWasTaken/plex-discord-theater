@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import Hls from "hls.js";
 import { Controls } from "./Controls";
-import { hlsMasterUrl, pingSession, stopSession, fetchMeta } from "../lib/api";
+import { hlsMasterUrl, pingSession, stopSession, fetchMeta, getSessionToken } from "../lib/api";
 import type { PlexItem, PlexMeta } from "../lib/api";
 
 const PING_INTERVAL_MS = 30_000;
@@ -17,16 +17,10 @@ export function Player({ item, isHost, onBack }: PlayerProps) {
   const hlsRef = useRef<Hls | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const mountedRef = useRef(true);
   const [meta, setMeta] = useState<PlexMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchMeta(item.ratingKey).then(setMeta).catch(console.error);
-  }, [item.ratingKey]);
-
-  const cleanup = useCallback(() => {
-    mountedRef.current = false;
+  const teardown = useCallback(() => {
     if (pingIntervalRef.current !== null) {
       clearInterval(pingIntervalRef.current);
       pingIntervalRef.current = null;
@@ -41,47 +35,54 @@ export function Player({ item, isHost, onBack }: PlayerProps) {
     }
   }, []);
 
-  function startSessionPing(url: string): void {
-    fetch(url)
-      .then((res) => {
-        if (!mountedRef.current) return;
-        const sid = res.headers.get("X-Session-Id");
-        if (sid) {
-          sessionIdRef.current = sid;
-          pingIntervalRef.current = setInterval(() => {
-            if (sessionIdRef.current) {
-              pingSession(sessionIdRef.current).catch(console.error);
-            }
-          }, PING_INTERVAL_MS);
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to retrieve session ID:", err);
-      });
-  }
+  useEffect(() => {
+    fetchMeta(item.ratingKey).then(setMeta).catch(console.error);
+  }, [item.ratingKey]);
 
   useEffect(() => {
-    mountedRef.current = true;
+    let mounted = true;
     const video = videoRef.current;
     if (!video) return;
 
-    const url = hlsMasterUrl(item.ratingKey);
+    // Generate session ID on the client — no duplicate manifest fetch needed
+    const sessionId = crypto.randomUUID();
+    sessionIdRef.current = sessionId;
+    const url = hlsMasterUrl(item.ratingKey, sessionId);
+
+    function cleanup() {
+      mounted = false;
+      teardown();
+    }
+
+    // Start ping interval immediately since we already know the sessionId
+    pingIntervalRef.current = setInterval(() => {
+      if (sessionIdRef.current) {
+        pingSession(sessionIdRef.current).catch(console.error);
+      }
+    }, PING_INTERVAL_MS);
 
     if (Hls.isSupported()) {
+      const token = getSessionToken();
       const hls = new Hls({
         maxBufferLength: 30,
         maxMaxBufferLength: 60,
+        xhrSetup: (xhr: XMLHttpRequest) => {
+          if (token) {
+            xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+          }
+        },
       });
       hlsRef.current = hls;
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (!mounted) return;
         video.play().catch((err) => console.warn("Autoplay prevented:", err));
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
           console.error("HLS fatal error:", data);
-          setError(`Playback error: ${data.type}`);
+          if (mounted) setError(`Playback error: ${data.type}`);
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
             hls.startLoad();
           } else {
@@ -92,24 +93,25 @@ export function Player({ item, isHost, onBack }: PlayerProps) {
 
       hls.loadSource(url);
       hls.attachMedia(video);
-      startSessionPing(url);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
+      // Safari native HLS — pass auth token as query param so it propagates to segments
+      const token = getSessionToken();
+      const nativeUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
+      video.src = nativeUrl;
       video.addEventListener("loadedmetadata", () => {
         video.play().catch((err) => console.warn("Autoplay prevented:", err));
       });
-      startSessionPing(url);
     } else {
       setError("HLS playback is not supported in this browser");
     }
 
     return cleanup;
-  }, [item.ratingKey, cleanup]);
+  }, [item.ratingKey, teardown]);
 
   const handleBack = useCallback(() => {
-    cleanup();
+    teardown();
     onBack();
-  }, [cleanup, onBack]);
+  }, [teardown, onBack]);
 
   return (
     <div style={styles.container}>

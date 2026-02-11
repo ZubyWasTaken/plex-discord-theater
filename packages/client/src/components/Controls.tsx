@@ -7,6 +7,15 @@ interface ControlsProps {
   onBack: () => void;
 }
 
+function fmt(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return h > 0
+    ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`
+    : `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 export function Controls({ videoRef, isHost, title, onBack }: ControlsProps) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -64,12 +73,6 @@ export function Controls({ videoRef, isHost, title, onBack }: ControlsProps) {
     },
     [videoRef],
   );
-
-  const fmt = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, "0")}`;
-  };
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
 

@@ -1,8 +1,34 @@
 import { Router, type Request, type Response } from "express";
-import { v4 as uuidv4 } from "uuid";
-import { plexFetch, plexJSON, plexUrl } from "../services/plex.js";
+import { plexFetch, plexJSON } from "../services/plex.js";
 
 const router = Router();
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const NUMERIC_RE = /^\d+$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_PROXY_PATH_LENGTH = 500;
+
+const ALLOWED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+const ALLOWED_MEDIA_TYPES = new Set([
+  "video/MP2T",
+  "video/mp2t",
+  "application/vnd.apple.mpegurl",
+]);
+
+// Pre-compile the Plex URL regex at module level (plexBase never changes at runtime)
+const plexBase = process.env.PLEX_URL?.replace(/\/$/, "") ?? "";
+const PLEX_URL_REGEX = new RegExp(escapeRegExp(plexBase) + "(/[^\\s]{1,500})", "g");
+const RELATIVE_URL_REGEX = /^(?!#)(?!https?:\/\/)(?!\/api\/plex\/)(.{1,500}\.(?:m3u8|ts).{0,200})$/gm;
+const PLEX_TOKEN_REGEX = /[?&]X-Plex-Token=[^&\s]*/g;
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -51,9 +77,15 @@ router.get("/sections", async (_req: Request, res: Response) => {
  * List all items in a library section.
  */
 router.get("/sections/:id/all", async (req: Request, res: Response) => {
+  const id = req.params.id as string;
+  if (!NUMERIC_RE.test(id)) {
+    res.status(400).json({ error: "Invalid section ID" });
+    return;
+  }
+
   try {
     const data = await plexJSON<{ MediaContainer: { Metadata?: PlexMetadataItem[] } }>(
-      `/library/sections/${req.params.id}/all`,
+      `/library/sections/${id}/all`,
     );
     const items = (data.MediaContainer.Metadata || []).map(mapItem);
     res.json({ items });
@@ -102,9 +134,15 @@ router.get("/search", async (req: Request, res: Response) => {
  * Get detailed metadata for a single item.
  */
 router.get("/meta/:ratingKey", async (req: Request, res: Response) => {
+  const ratingKey = req.params.ratingKey as string;
+  if (!NUMERIC_RE.test(ratingKey)) {
+    res.status(400).json({ error: "Invalid rating key" });
+    return;
+  }
+
   try {
     const data = await plexJSON<{ MediaContainer: { Metadata?: PlexMetadataItem[] } }>(
-      `/library/metadata/${req.params.ratingKey}`,
+      `/library/metadata/${ratingKey}`,
     );
     const metadata = data.MediaContainer.Metadata;
     if (!metadata || metadata.length === 0) {
@@ -136,8 +174,8 @@ router.get("/meta/:ratingKey", async (req: Request, res: Response) => {
  * Proxy Plex images (posters, artwork).
  */
 router.get("/thumb/*", async (req: Request, res: Response) => {
-  const imagePath = "/" + req.params[0];
-  if (!isAllowedProxyPath(imagePath)) {
+  const imagePath = "/" + (req.params[0] as string);
+  if (imagePath.length > MAX_PROXY_PATH_LENGTH || !isAllowedProxyPath(imagePath)) {
     res.status(400).end();
     return;
   }
@@ -149,7 +187,11 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
       return;
     }
     const contentType = plexRes.headers.get("content-type");
-    if (contentType) res.setHeader("Content-Type", contentType);
+    if (contentType && ALLOWED_IMAGE_TYPES.has(contentType.split(";")[0])) {
+      res.setHeader("Content-Type", contentType);
+    } else {
+      res.setHeader("Content-Type", "application/octet-stream");
+    }
     res.setHeader("Cache-Control", "public, max-age=86400");
 
     await pipeBody(plexRes.body, res);
@@ -162,14 +204,24 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
 // ─── HLS streaming ──────────────────────────────────────────────
 
 /**
- * GET /api/plex/hls/:ratingKey/master.m3u8
+ * GET /api/plex/hls/:ratingKey/:sessionId/master.m3u8
  * Start a Plex HLS transcode session and return rewritten manifest.
+ * The client generates the sessionId (UUID) and passes it in the URL.
  */
 router.get(
-  "/hls/:ratingKey/master.m3u8",
+  "/hls/:ratingKey/:sessionId/master.m3u8",
   async (req: Request, res: Response) => {
-    const { ratingKey } = req.params;
-    const sessionId = uuidv4();
+    const ratingKey = req.params.ratingKey as string;
+    const sessionId = req.params.sessionId as string;
+
+    if (!NUMERIC_RE.test(ratingKey)) {
+      res.status(400).json({ error: "Invalid rating key" });
+      return;
+    }
+    if (!UUID_RE.test(sessionId)) {
+      res.status(400).json({ error: "Invalid session ID" });
+      return;
+    }
 
     try {
       const plexRes = await plexFetch(
@@ -191,15 +243,15 @@ router.get(
 
       if (!plexRes.ok) {
         const text = await plexRes.text();
-        console.error("HLS start error:", plexRes.status, text);
+        console.error("HLS start error:", plexRes.status, text.substring(0, 200));
         res.status(plexRes.status).json({ error: "Failed to start transcode" });
         return;
       }
 
       const m3u8 = await plexRes.text();
+      const authToken = req.query.token as string | undefined;
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.setHeader("X-Session-Id", sessionId);
-      res.send(rewriteManifestUrls(m3u8));
+      res.send(rewriteManifestUrls(m3u8, authToken));
     } catch (err) {
       console.error("HLS start error:", err);
       res.status(502).json({ error: "Failed to start HLS session" });
@@ -212,34 +264,36 @@ router.get(
  * Proxy HLS segments and sub-manifests from Plex.
  */
 router.get("/hls/seg/*", async (req: Request, res: Response) => {
-  const segPath = "/" + req.params[0];
-  if (!isAllowedProxyPath(segPath)) {
+  const segPath = "/" + (req.params[0] as string);
+  if (segPath.length > MAX_PROXY_PATH_LENGTH || !isAllowedProxyPath(segPath)) {
     res.status(400).end();
     return;
   }
 
   try {
-    const url = plexUrl(segPath);
-    const plexRes = await fetch(url);
+    const plexRes = await plexFetch(segPath);
 
     if (!plexRes.ok) {
       res.status(plexRes.status).end();
       return;
     }
 
-    const contentType = plexRes.headers.get("content-type");
-    if (contentType) {
+    const contentType = plexRes.headers.get("content-type")?.split(";")[0];
+    if (contentType && ALLOWED_MEDIA_TYPES.has(contentType)) {
       res.setHeader("Content-Type", contentType);
     } else if (segPath.endsWith(".ts")) {
       res.setHeader("Content-Type", "video/MP2T");
     } else if (segPath.endsWith(".m3u8")) {
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    } else {
+      res.setHeader("Content-Type", "application/octet-stream");
     }
 
     // If this is a sub-manifest, rewrite URLs too
     if (segPath.endsWith(".m3u8")) {
       const m3u8 = await plexRes.text();
-      res.send(rewriteManifestUrls(m3u8));
+      const authToken = req.query.token as string | undefined;
+      res.send(rewriteManifestUrls(m3u8, authToken));
       return;
     }
 
@@ -255,9 +309,15 @@ router.get("/hls/seg/*", async (req: Request, res: Response) => {
  * Keep a transcode session alive.
  */
 router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
+  const sessionId = req.params.sessionId as string;
+  if (!UUID_RE.test(sessionId)) {
+    res.status(400).json({ error: "Invalid session ID" });
+    return;
+  }
+
   try {
     await plexFetch("/video/:/transcode/universal/ping", {
-      session: req.params.sessionId as string,
+      session: sessionId,
     });
     res.json({ ok: true });
   } catch (err) {
@@ -273,9 +333,15 @@ router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
 router.delete(
   "/hls/session/:sessionId",
   async (req: Request, res: Response) => {
+    const sessionId = req.params.sessionId as string;
+    if (!UUID_RE.test(sessionId)) {
+      res.status(400).json({ error: "Invalid session ID" });
+      return;
+    }
+
     try {
       await plexFetch("/video/:/transcode/universal/stop", {
-        session: req.params.sessionId as string,
+        session: sessionId,
       });
       res.json({ ok: true });
     } catch (err) {
@@ -297,35 +363,52 @@ function mapItem(m: PlexMetadataItem) {
   };
 }
 
-function escapeRegExp(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Reject paths with traversal sequences, double slashes, or null bytes. */
+/** Reject paths with traversal sequences, double slashes, null bytes, or backslashes. */
 function isAllowedProxyPath(p: string): boolean {
-  const decoded = decodeURIComponent(p);
-  return !decoded.includes("..") && !decoded.includes("//") && !decoded.includes("\0");
+  let decoded = p;
+  let prev: string;
+  do {
+    prev = decoded;
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      return false;
+    }
+  } while (decoded !== prev);
+
+  return (
+    !/\.\./.test(decoded) &&
+    !/\/\//.test(decoded) &&
+    !decoded.includes("\0") &&
+    !decoded.includes("\\")
+  );
 }
 
-/** Rewrite absolute and relative Plex URLs in an m3u8 manifest. */
-function rewriteManifestUrls(m3u8: string): string {
-  const plexBase = process.env.PLEX_URL!.replace(/\/$/, "");
+/**
+ * Rewrite absolute and relative Plex URLs in an m3u8 manifest.
+ * When authToken is provided (Safari native HLS), it is appended to segment URLs
+ * so that the auth middleware can validate requests made by the native player.
+ */
+function rewriteManifestUrls(m3u8: string, authToken?: string): string {
   let result = m3u8;
 
-  result = result.replace(
-    new RegExp(escapeRegExp(plexBase) + "(/[^\\s]+)", "g"),
-    (_match: string, path: string) => {
-      const cleanPath = path.replace(/[?&]X-Plex-Token=[^&\s]*/g, "");
-      return `/api/plex/hls/seg${cleanPath}`;
-    },
+  const addToken = (url: string) => {
+    if (!authToken) return url;
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}token=${encodeURIComponent(authToken)}`;
+  };
+
+  const cleanPlexToken = (path: string) => path.replace(PLEX_TOKEN_REGEX, "");
+
+  // Reset lastIndex since regexes have the 'g' flag
+  PLEX_URL_REGEX.lastIndex = 0;
+  result = result.replace(PLEX_URL_REGEX, (_match: string, path: string) =>
+    addToken(`/api/plex/hls/seg${cleanPlexToken(path)}`),
   );
 
-  result = result.replace(
-    /^(?!#)(?!https?:\/\/)(?!\/api\/plex\/)(.+\.(?:m3u8|ts).*)$/gm,
-    (_match: string, path: string) => {
-      const cleanPath = path.replace(/[?&]X-Plex-Token=[^&\s]*/g, "");
-      return `/api/plex/hls/seg/${cleanPath}`;
-    },
+  RELATIVE_URL_REGEX.lastIndex = 0;
+  result = result.replace(RELATIVE_URL_REGEX, (_match: string, path: string) =>
+    addToken(`/api/plex/hls/seg/${cleanPlexToken(path)}`),
   );
 
   return result;

@@ -1,7 +1,29 @@
+let sessionToken: string | null = null;
+
+export function setSessionToken(token: string): void {
+  sessionToken = token;
+}
+
+export function getSessionToken(): string | null {
+  return sessionToken;
+}
+
 const BASE = "";
 
-export async function apiGet<T = unknown>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (sessionToken) headers["Authorization"] = `Bearer ${sessionToken}`;
+  return headers;
+}
+
+export async function apiGet<T = unknown>(
+  path: string,
+  options?: { signal?: AbortSignal },
+): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: authHeaders(),
+    signal: options?.signal,
+  });
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
   return res.json();
 }
@@ -12,7 +34,7 @@ export async function apiPost<T = unknown>(
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
@@ -20,7 +42,10 @@ export async function apiPost<T = unknown>(
 }
 
 export async function apiDelete(path: string): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  const res = await fetch(`${BASE}${path}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
   if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
 }
 
@@ -56,8 +81,9 @@ export function fetchSections(): Promise<{ sections: PlexSection[] }> {
 
 export function fetchSectionItems(
   sectionId: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{ items: PlexItem[] }> {
-  return apiGet(`/api/plex/sections/${sectionId}/all`);
+  return apiGet(`/api/plex/sections/${encodeURIComponent(sectionId)}/all`, options);
 }
 
 export function searchPlex(query: string): Promise<{ items: PlexItem[] }> {
@@ -65,17 +91,17 @@ export function searchPlex(query: string): Promise<{ items: PlexItem[] }> {
 }
 
 export function fetchMeta(ratingKey: string): Promise<PlexMeta> {
-  return apiGet(`/api/plex/meta/${ratingKey}`);
+  return apiGet(`/api/plex/meta/${encodeURIComponent(ratingKey)}`);
 }
 
-export function hlsMasterUrl(ratingKey: string): string {
-  return `/api/plex/hls/${ratingKey}/master.m3u8`;
+export function hlsMasterUrl(ratingKey: string, sessionId: string): string {
+  return `/api/plex/hls/${encodeURIComponent(ratingKey)}/${encodeURIComponent(sessionId)}/master.m3u8`;
 }
 
 export function pingSession(sessionId: string): Promise<void> {
-  return apiGet(`/api/plex/hls/ping/${sessionId}`);
+  return apiGet(`/api/plex/hls/ping/${encodeURIComponent(sessionId)}`);
 }
 
 export function stopSession(sessionId: string): Promise<void> {
-  return apiDelete(`/api/plex/hls/session/${sessionId}`);
+  return apiDelete(`/api/plex/hls/session/${encodeURIComponent(sessionId)}`);
 }

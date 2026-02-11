@@ -35,11 +35,16 @@ export function Library({ isHost, onSelect }: LibraryProps) {
   // Load items when section changes
   useEffect(() => {
     if (!activeSection) return;
+    const controller = new AbortController();
     setLoading(true);
-    fetchSectionItems(activeSection)
+    fetchSectionItems(activeSection, { signal: controller.signal })
       .then(({ items: i }) => setItems(i))
-      .catch(console.error)
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.error(err);
+      })
       .finally(() => setLoading(false));
+    return () => controller.abort();
   }, [activeSection]);
 
   const handleSearch = useCallback(async (query: string) => {

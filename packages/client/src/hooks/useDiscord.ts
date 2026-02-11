@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { DiscordSDK } from "@discord/embedded-app-sdk";
-import { apiPost } from "../lib/api";
+import { apiPost, setSessionToken } from "../lib/api";
 
 interface DiscordState {
   isReady: boolean;
@@ -39,10 +39,15 @@ export function useDiscord(): DiscordState {
           scope: ["identify", "guilds", "rpc.voice.read"],
         });
 
-        const { access_token } = await apiPost<{ access_token: string }>(
-          "/api/token",
-          { code },
-        );
+        const { access_token, session_token } = await apiPost<{
+          access_token: string;
+          session_token: string;
+        }>("/api/token", { code });
+        if (session_token) {
+          setSessionToken(session_token);
+        } else {
+          console.warn("No session token received from server");
+        }
 
         const auth = await sdk.commands.authenticate({ access_token });
         const user = auth.user;

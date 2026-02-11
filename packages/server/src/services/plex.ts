@@ -11,7 +11,8 @@ const PLEX_HEADERS = {
 
 export function plexUrl(path: string, params?: Record<string, string>): string {
   const base = process.env.PLEX_URL!.replace(/\/$/, "");
-  const url = new URL(path, base);
+  // Use string concatenation to avoid URL constructor mishandling colon-containing Plex paths
+  const url = new URL(`${base}${path.startsWith("/") ? "" : "/"}${path}`);
   url.searchParams.set("X-Plex-Token", process.env.PLEX_TOKEN!);
   if (params) {
     for (const [key, value] of Object.entries(params)) {
