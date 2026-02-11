@@ -1,0 +1,10 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+    ports:
+      - "3000:3000"
+    env_file: .env
+    restart: unless-stopped
