@@ -337,16 +337,16 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    position: "relative",
-    width: "100vw",
-    height: "100vh",
+    position: "fixed",
+    inset: 0,
     background: "#000",
     overflow: "hidden",
+    zIndex: 50,
   },
   video: {
     width: "100%",
     height: "100%",
-    objectFit: "contain",
+    objectFit: "cover",
   },
   error: {
     position: "absolute",
