@@ -392,11 +392,23 @@ const OUR_CLIENT_ID = "plex-discord-theater";
  * to reliably stop transcodes.
  */
 const plexTranscodeKeys = new Map<string, string>();
+/** Maps our session UUID → the ratingKey being played (needed for timeline stopped). */
+const sessionRatingKeys = new Map<string, string>();
 const PLEX_SESSION_KEY_RE = /session\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
 
 /** Look up the Plex internal transcode key for one of our session UUIDs. */
 export function getPlexTranscodeKey(sessionId: string): string | undefined {
   return plexTranscodeKeys.get(sessionId);
+}
+
+/** Look up the ratingKey for one of our session UUIDs. */
+export function getSessionRatingKey(sessionId: string): string | undefined {
+  return sessionRatingKeys.get(sessionId);
+}
+
+/** Return the stable client identifier used for all Plex requests. */
+export function getSessionClientId(_sessionId: string): string {
+  return OUR_CLIENT_ID;
 }
 
 /**
@@ -411,6 +423,7 @@ export function markTranscodeStopped(sessionId: string): void {
   const plexKey = plexTranscodeKeys.get(sessionId);
   if (plexKey) activeTranscodeKeys.delete(plexKey);
   plexTranscodeKeys.delete(sessionId);
+  sessionRatingKeys.delete(sessionId);
 }
 
 /**
@@ -419,18 +432,28 @@ export function markTranscodeStopped(sessionId: string): void {
  * preventing 400 errors on subsequent transcode starts.
  */
 export async function notifyPlexStopped(ratingKey: string | null, sessionId: string): Promise<void> {
+  // Use the tracked ratingKey if caller doesn't provide one
+  const effectiveRatingKey = ratingKey || sessionRatingKeys.get(sessionId) || "0";
   try {
-    await plexFetch("/:/timeline", {
-      ratingKey: ratingKey || "0",
-      state: "stopped",
-      time: "0",
-      duration: "0",
-      "X-Plex-Session-Identifier": sessionId,
-      "X-Plex-Client-Identifier": OUR_CLIENT_ID,
-    });
-    if (DEBUG) console.log("[HLS] Timeline stopped sent for session:", sessionId.substring(0, 8));
-  } catch {
-    // Non-fatal — best effort cleanup
+    const res = await plexFetch(
+      "/:/timeline",
+      {
+        ratingKey: effectiveRatingKey,
+        key: `/library/metadata/${effectiveRatingKey}`,
+        state: "stopped",
+        time: "0",
+        duration: "0",
+        identifier: "com.plexapp.plugins.library",
+      },
+      {
+        "X-Plex-Session-Identifier": sessionId,
+        "X-Plex-Client-Identifier": OUR_CLIENT_ID,
+      },
+    );
+    console.log("[HLS] Timeline stopped for session:", sessionId.substring(0, 8),
+      "ratingKey:", effectiveRatingKey, "→", res.status);
+  } catch (err) {
+    console.log("[HLS] Timeline stopped failed (non-fatal):", err);
   }
 }
 
@@ -456,11 +479,12 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
     }>("/status/sessions");
 
     const sessions = data.MediaContainer.Metadata || [];
-    if (DEBUG) console.log("[HLS] /status/sessions count:", sessions.length);
+    console.log("[HLS] /status/sessions:", sessions.length);
     for (const s of sessions) {
       const player = s.Player;
+      // Match both the base identifier and per-session identifiers (plex-discord-theater-XXXXXXXX)
       const isOurs =
-        player?.machineIdentifier === OUR_CLIENT_ID ||
+        player?.machineIdentifier?.startsWith("plex-discord-theater") ||
         player?.product === "Plex Discord Theater";
       if (!isOurs) continue;
 
@@ -594,7 +618,7 @@ router.get(
     // Subtitle mode — "none" when user explicitly disabled subtitles, otherwise "burn"
     const subtitleMode = req.query.subtitles === "burn" ? "burn" : "none";
 
-    if (DEBUG) console.log("[HLS] Master manifest requested for ratingKey:", ratingKey, "session:", sessionId, offset ? `offset:${offset}s` : "");
+    console.log("[HLS] Master manifest requested for ratingKey:", ratingKey, "session:", sessionId.substring(0, 8), offset ? `offset:${offset}s` : "");
     try {
       const params: Record<string, string> = {
         hasMDE: "1",
@@ -614,11 +638,15 @@ router.get(
       };
       if (offset) params.offset = offset;
 
+      // Use a single stable client identifier so Plex counts us as one player.
+      // Per-session IDs caused Plex to count each session as a separate stream,
+      // hitting the "remote streams per user" limit after 2 sessions.
+      // The decision + timeline stopped flow properly clears per-client state between sessions.
       const hlsHeaders = {
         "X-Plex-Session-Identifier": sessionId,
         "X-Plex-Client-Profile-Extra":
           "add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac)",
-        "X-Plex-Client-Identifier": "plex-discord-theater",
+        "X-Plex-Client-Identifier": OUR_CLIENT_ID,
         "X-Plex-Product": "Plex Discord Theater",
         "X-Plex-Platform": "Chrome",
         "X-Plex-Device": "Browser",
@@ -630,41 +658,53 @@ router.get(
       const decisionPath = "/video/:/transcode/universal/decision";
       try {
         const decisionRes = await plexFetch(decisionPath, { ...params, session: sessionId }, hlsHeaders);
-        if (DEBUG) console.log("[HLS] Decision response:", decisionRes.status);
+        // Log the decision body — contains generalDecisionCode that tells us
+        // whether Plex will direct play (1000), transcode (1001), or error (2xxx/4xxx)
+        try {
+          const decBody = await decisionRes.json() as Record<string, unknown>;
+          const mc = decBody.MediaContainer as Record<string, unknown> | undefined;
+          console.log("[HLS] Decision:", decisionRes.status,
+            "code:", mc?.generalDecisionCode, mc?.generalDecisionText);
+        } catch {
+          console.log("[HLS] Decision:", decisionRes.status, "(no body)");
+        }
       } catch (err) {
-        if (DEBUG) console.log("[HLS] Decision call failed (non-fatal):", err);
+        console.log("[HLS] Decision failed (non-fatal):", err);
       }
 
+      // Pass session as both a query param and header (matching plex-mpv-shim behavior)
+      const startParams = { ...params, session: sessionId };
       const hlsPath = "/video/:/transcode/universal/start.m3u8";
-      if (DEBUG) console.log("[HLS] Plex request URL:", plexUrl(hlsPath, params).replace(/X-Plex-Token=[^&]+/, "X-Plex-Token=***"));
-      let plexRes = await plexFetch(hlsPath, params, hlsHeaders);
+      let plexRes = await plexFetch(hlsPath, startParams, hlsHeaders);
 
       // On 400, flush stale transcodes and retry with increasing delays.
       // Plex can take several seconds to fully release resources after a transcode is killed.
       // Don't stop the current session — it was never started, so stopping it sends a ghost
       // request with our UUID that pollutes Plex's per-client state.
       if (plexRes.status === 400) {
-        // Flush ALL stale sessions (no ratingKey filter — catch everything)
+        console.log("[HLS] Start returned 400, flushing stale transcodes...");
         let flushed = await flushStaleTranscodes();
-        if (DEBUG) console.log("[HLS] Flushed", flushed, "stale transcode(s)");
+        console.log("[HLS] Flushed", flushed, "stale transcode(s)");
 
-        // Retry up to 3 times — Plex needs time to tear down ffmpeg and release locks
         for (let attempt = 1; attempt <= 3 && plexRes.status === 400; attempt++) {
           const delay = flushed > 0 ? 3000 + attempt * 1500 : 2000 * attempt;
-          if (DEBUG) console.log("[HLS] Retry attempt", attempt, "after", delay, "ms");
+          console.log("[HLS] Retry", attempt, "in", delay, "ms");
           await new Promise((r) => setTimeout(r, delay));
-          // On the last retry, flush again in case Plex respawned the transcode
           if (attempt === 2 && plexRes.status === 400) {
             const reflushed = await flushStaleTranscodes();
             if (reflushed > 0) {
               flushed += reflushed;
-              if (DEBUG) console.log("[HLS] Re-flushed", reflushed, "more transcode(s)");
+              console.log("[HLS] Re-flushed", reflushed, "more transcode(s)");
               await new Promise((r) => setTimeout(r, 3000));
             }
           }
           // Re-prime decision before retry
-          try { await plexFetch(decisionPath, { ...params, session: sessionId }, hlsHeaders); } catch {}
-          plexRes = await plexFetch(hlsPath, params, hlsHeaders);
+          try {
+            const retryDecision = await plexFetch(decisionPath, { ...params, session: sessionId }, hlsHeaders);
+            console.log("[HLS] Retry decision:", retryDecision.status);
+          } catch {}
+          plexRes = await plexFetch(hlsPath, startParams, hlsHeaders);
+          console.log("[HLS] Retry", attempt, "result:", plexRes.status);
         }
       }
 
@@ -682,8 +722,9 @@ router.get(
       const plexKeyMatch = m3u8.match(PLEX_SESSION_KEY_RE);
       if (plexKeyMatch) {
         plexTranscodeKeys.set(sessionId, plexKeyMatch[1]);
+        sessionRatingKeys.set(sessionId, ratingKey);
         activeTranscodeKeys.add(plexKeyMatch[1]);
-        if (DEBUG) console.log("[HLS] Plex transcode key:", plexKeyMatch[1].substring(0, 8), "for our session:", sessionId.substring(0, 8));
+        console.log("[HLS] Plex transcode key:", plexKeyMatch[1].substring(0, 8), "for session:", sessionId.substring(0, 8));
       }
 
       const authToken = req.query.token as string | undefined;
@@ -783,7 +824,7 @@ router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
       { session: sessionId },
       {
         "X-Plex-Session-Identifier": sessionId,
-        "X-Plex-Client-Identifier": "plex-discord-theater",
+        "X-Plex-Client-Identifier": getSessionClientId(sessionId),
       },
     );
     res.json({ ok: true });
@@ -827,7 +868,7 @@ router.delete(
             "X-Plex-Client-Identifier": OUR_CLIENT_ID,
           },
         );
-        if (DEBUG) console.log("[HLS] Stop session", sessionId.substring(0, 8),
+        console.log("[HLS] Stop session", sessionId.substring(0, 8),
           `(plex key: ${plexKey.substring(0, 8)})`, "→", stopRes.status);
       } catch (err) {
         console.error("Stop session error:", err);

@@ -3,9 +3,7 @@ import type { Server } from "http";
 import { isValidSession } from "../middleware/auth.js";
 import { instanceHosts } from "../routes/discord.js";
 import { plexFetch } from "./plex.js";
-import { getPlexTranscodeKey, markTranscodeStopped, notifyPlexStopped } from "../routes/plex.js";
-
-const OUR_CLIENT_ID = "plex-discord-theater";
+import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped } from "../routes/plex.js";
 
 /**
  * Stop a Plex transcode using the mapped Plex internal key.
@@ -16,19 +14,18 @@ async function killPlexTranscode(hlsSessionId: string | null): Promise<void> {
   if (!hlsSessionId) return;
 
   const plexKey = getPlexTranscodeKey(hlsSessionId);
+  const clientId = getSessionClientId(hlsSessionId);
+  const ratingKey = getSessionRatingKey(hlsSessionId) || null;
   const stopKey = plexKey || hlsSessionId;
 
   // Stop the Plex transcode FIRST, then clear the mapping.
-  // This avoids a race where the DELETE endpoint arrives while we're still
-  // stopping — it can still find the mapping and send a proper stop with the
-  // Plex key (which Plex handles idempotently).
   try {
     const res = await plexFetch(
       "/video/:/transcode/universal/stop",
       { session: stopKey },
       {
         "X-Plex-Session-Identifier": stopKey,
-        "X-Plex-Client-Identifier": OUR_CLIENT_ID,
+        "X-Plex-Client-Identifier": clientId,
       },
     );
     console.log("[Sync] Stop transcode", stopKey.substring(0, 8),
@@ -41,8 +38,11 @@ async function killPlexTranscode(hlsSessionId: string | null): Promise<void> {
   // Now clear the mapping and block segment proxy
   markTranscodeStopped(hlsSessionId);
 
-  // Notify Plex that playback stopped so it clears per-client state
-  notifyPlexStopped(null, hlsSessionId).catch(() => {});
+  // Notify Plex that playback stopped so it clears per-client state.
+  // Await this — if it's fire-and-forget, a new start can race ahead
+  // before Plex processes the timeline update, causing 400.
+  // Pass the ratingKey captured BEFORE markTranscodeStopped cleared it.
+  await notifyPlexStopped(ratingKey, hlsSessionId);
 }
 
 interface RoomClient {
