@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import Hls from "hls.js";
+import { HlsJsP2PEngine } from "p2p-media-loader-hlsjs";
 import { Controls } from "./Controls";
 import { hlsMasterUrl, pingSession, stopSession, getSessionToken } from "../lib/api";
 import type { PlexItem } from "../lib/api";
@@ -128,13 +129,51 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
       if (Hls.isSupported()) {
         const token = getSessionToken();
-        const hls = new Hls({
+        const HlsWithP2P = HlsJsP2PEngine.injectMixin(Hls);
+        const hls = new HlsWithP2P({
           maxBufferLength: 30,
           maxMaxBufferLength: 60,
           xhrSetup: (xhr: XMLHttpRequest, _urlStr: string) => {
             if (token) {
               xhr.setRequestHeader("Authorization", `Bearer ${token}`);
             }
+          },
+          p2p: {
+            core: {
+              // All viewers in the same watch session share the same swarmId,
+              // so they discover each other and exchange HLS segments via WebRTC
+              swarmId: `pdt-${sessionId}`,
+              // Use self-hosted tracker on same origin to bypass Discord CSP
+              announceTrackers: [
+                `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/tracker`,
+              ],
+              // Reduce "must fetch via HTTP" window so P2P has a chance to supply
+              // more segments before the HTTP downloader grabs them
+              highDemandTimeWindow: 8,
+              // Widen the P2P prefetch window so peers look further ahead
+              p2pDownloadTimeWindow: 8000,
+              // Narrow the HTTP prefetch window — let P2P fill the gap
+              httpDownloadTimeWindow: 2000,
+              // Allow more concurrent P2P transfers
+              simultaneousP2PDownloads: 5,
+              simultaneousHttpDownloads: 1,
+              // p2p-media-loader uses its own fetch() for segments, bypassing
+              // hls.js's xhrSetup. Inject the auth header here.
+              httpRequestSetup: async (url, _byteRange, signal, requestByteRange) => {
+                const headers: Record<string, string> = {};
+                if (token) headers["Authorization"] = `Bearer ${token}`;
+                if (requestByteRange) {
+                  const end = requestByteRange.end != null ? requestByteRange.end : "";
+                  headers["Range"] = `bytes=${requestByteRange.start}-${end}`;
+                }
+                return new Request(url, { headers, signal });
+              },
+            },
+            onHlsJsCreated: (hls) => {
+              hls.p2pEngine.addEventListener("onTrackerError", ({ error }) => {
+                console.error("[P2P] Tracker error:", error);
+              });
+            },
           },
         });
         hlsRef.current = hls;

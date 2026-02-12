@@ -4,6 +4,7 @@ import { isValidSession } from "../middleware/auth.js";
 import { instanceHosts } from "../routes/discord.js";
 import { plexFetch } from "./plex.js";
 import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped } from "../routes/plex.js";
+import { createTracker, handleTrackerSocket, destroyTracker } from "./tracker.js";
 
 /**
  * Stop a Plex transcode using the mapped Plex internal key.
@@ -114,8 +115,22 @@ function interpolatedPosition(state: RoomState): number {
 export function attachWebSocketServer(server: Server): void {
   wss = new WebSocketServer({ noServer: true });
 
+  // Dedicated WSS for the P2P tracker — keeps tracker traffic isolated
+  const trackerWss = new WebSocketServer({ noServer: true });
+  createTracker();
+
+  trackerWss.on("connection", (ws) => {
+    handleTrackerSocket(ws);
+  });
+
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+    if (url.pathname === "/tracker") {
+      trackerWss.handleUpgrade(req, socket, head, (ws) => {
+        trackerWss.emit("connection", ws, req);
+      });
+      return;
+    }
     if (url.pathname !== "/ws") {
       socket.destroy();
       return;
@@ -337,5 +352,6 @@ export function closeWebSocketServer(): void {
     wss.close();
     wss = null;
   }
+  destroyTracker();
   rooms.clear();
 }
