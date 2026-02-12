@@ -26,6 +26,20 @@ export function App() {
     enabled: isReady,
   });
 
+  const effectiveIsHost = syncState.isHost ?? isHost;
+
+  // Toast when promoted to host
+  const [promotedToast, setPromotedToast] = useState(false);
+  const prevSyncIsHost = useRef(syncState.isHost);
+  useEffect(() => {
+    if (syncState.isHost === true && prevSyncIsHost.current !== true) {
+      setPromotedToast(true);
+      const timer = setTimeout(() => setPromotedToast(false), 2000);
+      return () => clearTimeout(timer);
+    }
+    prevSyncIsHost.current = syncState.isHost;
+  }, [syncState.isHost]);
+
   const pushView = useCallback((v: View) => {
     setViewStack((s) => [...s, v]);
   }, []);
@@ -43,7 +57,7 @@ export function App() {
 
   // Viewer: auto-navigate when host starts or stops playback
   useEffect(() => {
-    if (isHost) return;
+    if (effectiveIsHost) return;
 
     const prevKey = prevRatingKeyRef.current;
     const newKey = syncState.ratingKey;
@@ -72,7 +86,7 @@ export function App() {
         return s;
       });
     }
-  }, [isHost, syncState.ratingKey, syncState.title, syncState.subtitles]);
+  }, [effectiveIsHost, syncState.ratingKey, syncState.title, syncState.subtitles]);
 
   const handleRejoin = useCallback(() => {
     if (!syncState.ratingKey) return;
@@ -89,7 +103,7 @@ export function App() {
   }, [syncState.ratingKey, syncState.title, syncState.subtitles, pushView]);
 
   // Show "Now Playing" banner when viewer is not on the player but host is playing
-  const showNowPlaying = !isHost && !!syncState.ratingKey && view.kind !== "player";
+  const showNowPlaying = !effectiveIsHost && !!syncState.ratingKey && view.kind !== "player";
 
   const handleSelect = useCallback((item: PlexItem) => {
     if (item.type === "show") {
@@ -146,10 +160,15 @@ export function App() {
             <h1 style={styles.logo}>Watch Together</h1>
           )}
           <span style={styles.user}>
-            {username} {isHost ? "(Host)" : "(Viewer)"}
-            {!isHost && syncState.connected && " \u2022 Synced"}
+            {username} {effectiveIsHost ? "(Host)" : "(Viewer)"}
+            {!effectiveIsHost && syncState.connected && " \u2022 Synced"}
           </span>
         </header>
+      )}
+
+      {/* Host promotion toast */}
+      {promotedToast && (
+        <div style={styles.promotedToast}>You are now the host</div>
       )}
 
       {/* Now Playing rejoin banner for viewers */}
@@ -166,12 +185,12 @@ export function App() {
 
       {view.kind === "library" && (
         <>
-          {!isHost && !syncState.ratingKey && (
+          {!effectiveIsHost && !syncState.ratingKey && (
             <div style={styles.waitingBanner}>
               Waiting for host to start playback...
             </div>
           )}
-          <Library isHost={isHost} onSelect={handleSelect} />
+          <Library isHost={effectiveIsHost} onSelect={handleSelect} />
         </>
       )}
 
@@ -195,7 +214,7 @@ export function App() {
       {view.kind === "detail" && (
         <MovieDetail
           item={view.item}
-          isHost={isHost}
+          isHost={effectiveIsHost}
           onPlay={handlePlay}
           onBack={popView}
         />
@@ -204,7 +223,7 @@ export function App() {
       {view.kind === "player" && (
         <Player
           item={view.item}
-          isHost={isHost}
+          isHost={effectiveIsHost}
           subtitles={view.subtitles}
           onBack={popView}
           syncState={syncState}
@@ -291,6 +310,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "14px",
     fontWeight: 500,
     borderBottom: "1px solid rgba(229,160,13,0.2)",
+  },
+  promotedToast: {
+    position: "fixed",
+    top: "16px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    padding: "10px 24px",
+    borderRadius: "8px",
+    background: "rgba(46, 160, 67, 0.9)",
+    color: "#fff",
+    fontSize: "14px",
+    fontWeight: 600,
+    zIndex: 1000,
+    pointerEvents: "none",
   },
   nowPlayingBanner: {
     display: "flex",

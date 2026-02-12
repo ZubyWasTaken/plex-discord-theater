@@ -277,15 +277,35 @@ export function attachWebSocketServer(server: Server): void {
       room.clients.delete(client);
 
       if (client.isHost) {
-        // Capture before clearing so we can kill the exact Plex transcode
-        const disconnectedSessionId = room.state.hlsSessionId;
-        // Clear playback state so new joiners don't try to load a dead HLS session
-        room.state.playing = false;
-        room.state.hlsSessionId = null;
-        // Keep ratingKey and title so viewers know what WAS playing
-        broadcast(room, ws, { type: "host-disconnected" });
-        // Kill the Plex transcode server-side
-        killPlexTranscode(disconnectedSessionId).catch(() => {});
+        if (room.clients.size > 0) {
+          // Promote the first remaining client to host
+          const newHost = room.clients.values().next().value!;
+          newHost.isHost = true;
+
+          // Update the instance host mapping so future joins see the new host
+          const instance = instanceHosts.get(roomId);
+          if (instance) {
+            instance.hostUserId = newHost.userId;
+          }
+
+          console.log("[Sync] Host left, promoting", newHost.userId.substring(0, 8), "to host");
+
+          // Notify the promoted client
+          sendTo(newHost.ws, { type: "host-promoted" });
+          // Notify all other clients that the host changed
+          for (const c of room.clients) {
+            if (c !== newHost) {
+              sendTo(c.ws, { type: "host-changed" });
+            }
+          }
+          // Do NOT kill the Plex transcode — new host inherits active session
+        } else {
+          // No clients remain — kill the transcode and clean up
+          const disconnectedSessionId = room.state.hlsSessionId;
+          room.state.playing = false;
+          room.state.hlsSessionId = null;
+          killPlexTranscode(disconnectedSessionId).catch(() => {});
+        }
       }
 
       if (room.clients.size === 0) {

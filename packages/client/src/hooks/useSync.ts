@@ -10,6 +10,8 @@ export interface SyncState {
   position: number;
   hostDisconnected: boolean;
   hlsSessionId: string | null;
+  /** null = no override (use initial value from useDiscord), true = promoted to host by server */
+  isHost: boolean | null;
   /** Increments only on explicit commands (play/pause/resume/seek), not heartbeats */
   commandSeq: number;
 }
@@ -38,6 +40,7 @@ const INITIAL_STATE: SyncState = {
   position: 0,
   hostDisconnected: false,
   hlsSessionId: null,
+  isHost: null,
   commandSeq: 0,
 };
 
@@ -179,6 +182,12 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
             setState((prev) => ({ ...prev, hostDisconnected: true }));
             break;
           case "host-reconnected":
+            setState((prev) => ({ ...prev, hostDisconnected: false }));
+            break;
+          case "host-promoted":
+            setState((prev) => ({ ...prev, isHost: true, hostDisconnected: false }));
+            break;
+          case "host-changed":
             setState((prev) => ({ ...prev, hostDisconnected: false }));
             break;
         }
