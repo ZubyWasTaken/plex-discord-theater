@@ -8,6 +8,10 @@ import type { SyncState, SyncActions } from "../hooks/useSync";
 const PING_INTERVAL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const DRIFT_THRESHOLD_S = 2;
+const MAX_VIEWER_RETRIES = 3;
+
+// Module-scoped so the pending stop survives across Player mount/unmount cycles
+let pendingStop: Promise<void> | null = null;
 
 interface PlayerProps {
   item: PlexItem;
@@ -24,8 +28,21 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionIdRef = useRef<string | null>(null);
-  const pendingStopRef = useRef<Promise<void> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+  const retryCountRef = useRef(0);
+
+  // Stable ref for syncActions so the HLS effect doesn't re-run when actions change
+  const syncActionsRef = useRef(syncActions);
+  syncActionsRef.current = syncActions;
+
+  // Whether this player owns the HLS session (host creates it, viewer borrows it)
+  const ownsSession = isHost;
+
+  // For the viewer, tracks the host's HLS session ID from sync state.
+  // For the host, always null — prevents spurious effect re-runs that would
+  // generate a new UUID and orphan the running Plex transcode.
+  const viewerHlsSessionId = ownsSession ? null : (syncState?.hlsSessionId ?? null);
 
   const destroyLocal = useCallback(() => {
     if (pingIntervalRef.current !== null) {
@@ -48,15 +65,26 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
     destroyLocal();
 
-    const sessionId = crypto.randomUUID();
+    // Host creates a new session; viewer reuses the host's session
+    const sessionId = ownsSession
+      ? crypto.randomUUID()
+      : viewerHlsSessionId;
+
+    if (!sessionId) {
+      // Viewer doesn't have a session ID yet — wait for sync
+      return;
+    }
+
     sessionIdRef.current = sessionId;
 
     const url = hlsMasterUrl(item.ratingKey, sessionId, { subtitles });
 
     async function start() {
-      if (pendingStopRef.current) {
-        try { await pendingStopRef.current; } catch {}
-        pendingStopRef.current = null;
+      if (pendingStop) {
+        try { await pendingStop; } catch {}
+        pendingStop = null;
+        // Give Plex time to fully release transcode resources
+        await new Promise(r => setTimeout(r, 500));
       }
 
       const video = videoRef.current;
@@ -79,15 +107,18 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           if (!mounted) return;
           video.play().catch((err) => console.warn("Autoplay prevented:", err));
 
-          // Host: broadcast play when manifest is ready
-          if (isHost && syncActions) {
-            syncActions.sendPlay(item.ratingKey, item.title, subtitles);
+          // Host: broadcast play with sessionId when manifest is ready
+          if (isHost) {
+            syncActionsRef.current?.sendPlay(item.ratingKey, item.title, subtitles, sessionId!);
           }
         });
 
-        // Clear error banner when recovery succeeds
+        // Clear error banner and reset retry count when recovery succeeds
         hls.on(Hls.Events.FRAG_LOADED, () => {
-          if (mounted) setError(null);
+          if (mounted) {
+            setError(null);
+            retryCountRef.current = 0;
+          }
         });
 
         hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -96,10 +127,17 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
             if (mounted) setError(`Playback error: ${data.type}`);
             if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
               hls.startLoad();
+            } else if (!ownsSession && retryCountRef.current < MAX_VIEWER_RETRIES) {
+              // Viewer: retry by bumping retryKey after a delay (re-runs the effect)
+              retryCountRef.current++;
+              console.warn(`[Viewer] HLS fatal error, retry ${retryCountRef.current}/${MAX_VIEWER_RETRIES} in 2s`);
+              setTimeout(() => {
+                if (mounted) setRetryKey((k) => k + 1);
+              }, 2000);
             } else {
               destroyLocal();
-              if (sessionIdRef.current) {
-                pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
+              if (ownsSession && sessionIdRef.current) {
+                pendingStop = stopSession(sessionIdRef.current).catch(() => {});
                 sessionIdRef.current = null;
               }
             }
@@ -115,8 +153,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         video.src = nativeUrl;
         const onLoaded = () => {
           video.play().catch((err) => console.warn("Autoplay prevented:", err));
-          if (isHost && syncActions) {
-            syncActions.sendPlay(item.ratingKey, item.title, subtitles);
+          if (isHost) {
+            syncActionsRef.current?.sendPlay(item.ratingKey, item.title, subtitles, sessionId!);
           }
         };
         video.addEventListener("loadedmetadata", onLoaded, { once: true });
@@ -125,19 +163,21 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         return;
       }
 
-      // Start ping interval after successful player setup
-      pingIntervalRef.current = setInterval(() => {
-        if (sessionIdRef.current) {
-          pingSession(sessionIdRef.current).catch(console.error);
-        }
-      }, PING_INTERVAL_MS);
+      // Only the session owner pings to keep the transcode alive
+      if (ownsSession) {
+        pingIntervalRef.current = setInterval(() => {
+          if (sessionIdRef.current) {
+            pingSession(sessionIdRef.current).catch(console.error);
+          }
+        }, PING_INTERVAL_MS);
+      }
 
       // Host: heartbeat every 5s
-      if (isHost && syncActions) {
+      if (isHost) {
         heartbeatIntervalRef.current = setInterval(() => {
           const v = videoRef.current;
           if (v) {
-            syncActions.sendHeartbeat(v.currentTime, !v.paused);
+            syncActionsRef.current?.sendHeartbeat(v.currentTime, !v.paused);
           }
         }, HEARTBEAT_INTERVAL_MS);
       }
@@ -148,16 +188,19 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     return () => {
       mounted = false;
       destroyLocal();
-      if (sessionIdRef.current) {
-        pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
+      // Only the session owner stops the Plex transcode
+      if (ownsSession && sessionIdRef.current) {
+        pendingStop = stopSession(sessionIdRef.current).catch(() => {});
         sessionIdRef.current = null;
       }
     };
-  }, [item.ratingKey, subtitles, destroyLocal, isHost, syncActions]);
+  }, [item.ratingKey, subtitles, destroyLocal, isHost, ownsSession, viewerHlsSessionId, retryKey]);
 
-  // Viewer: drift correction — sync position + play/pause state
+  // Viewer: respond to explicit host commands (play/pause/resume/seek)
+  // Does NOT fire on heartbeats — both clients share the same HLS stream
+  // so they naturally stay in sync without constant seeking.
   useEffect(() => {
-    if (isHost || !syncState) return;
+    if (isHost || !syncState || syncState.commandSeq === 0) return;
     const video = videoRef.current;
     if (!video) return;
 
@@ -168,26 +211,27 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
       video.pause();
     }
 
-    // Drift correction — only when we have a meaningful position
+    // Seek correction — only on explicit commands, with generous threshold
     if (syncState.position > 0) {
       const drift = Math.abs(video.currentTime - syncState.position);
       if (drift > DRIFT_THRESHOLD_S) {
         video.currentTime = syncState.position;
       }
     }
-  }, [isHost, syncState?.playing, syncState?.position]);
+  }, [isHost, syncState?.commandSeq]);
 
   const handleBack = useCallback(() => {
     destroyLocal();
-    if (sessionIdRef.current) {
-      pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
+    // Only the session owner stops the Plex transcode
+    if (ownsSession && sessionIdRef.current) {
+      pendingStop = stopSession(sessionIdRef.current).catch(() => {});
       sessionIdRef.current = null;
     }
-    if (isHost && syncActions) {
-      syncActions.sendStop();
+    if (isHost) {
+      syncActionsRef.current?.sendStop();
     }
     onBack();
-  }, [destroyLocal, onBack, isHost, syncActions]);
+  }, [destroyLocal, onBack, isHost, ownsSession]);
 
   return (
     <div style={styles.container}>

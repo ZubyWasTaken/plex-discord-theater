@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { getSessionToken } from "../lib/api";
 
 export interface SyncState {
@@ -9,10 +9,13 @@ export interface SyncState {
   playing: boolean;
   position: number;
   hostDisconnected: boolean;
+  hlsSessionId: string | null;
+  /** Increments only on explicit commands (play/pause/resume/seek), not heartbeats */
+  commandSeq: number;
 }
 
 export interface SyncActions {
-  sendPlay: (ratingKey: string, title: string, subtitles: boolean) => void;
+  sendPlay: (ratingKey: string, title: string, subtitles: boolean, hlsSessionId: string) => void;
   sendPause: (position: number) => void;
   sendResume: (position: number) => void;
   sendSeek: (position: number) => void;
@@ -34,6 +37,8 @@ const INITIAL_STATE: SyncState = {
   playing: false,
   position: 0,
   hostDisconnected: false,
+  hlsSessionId: null,
+  commandSeq: 0,
 };
 
 export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
@@ -52,31 +57,19 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
     }
   }, []);
 
-  const actions: SyncActions = {
-    sendPlay: useCallback(
-      (ratingKey: string, title: string, subtitles: boolean) =>
-        send({ type: "play", ratingKey, title, subtitles }),
-      [send],
-    ),
-    sendPause: useCallback(
-      (position: number) => send({ type: "pause", position }),
-      [send],
-    ),
-    sendResume: useCallback(
-      (position: number) => send({ type: "resume", position }),
-      [send],
-    ),
-    sendSeek: useCallback(
-      (position: number) => send({ type: "seek", position }),
-      [send],
-    ),
-    sendStop: useCallback(() => send({ type: "stop" }), [send]),
-    sendHeartbeat: useCallback(
-      (position: number, playing: boolean) =>
+  const actions: SyncActions = useMemo(
+    () => ({
+      sendPlay: (ratingKey: string, title: string, subtitles: boolean, hlsSessionId: string) =>
+        send({ type: "play", ratingKey, title, subtitles, hlsSessionId }),
+      sendPause: (position: number) => send({ type: "pause", position }),
+      sendResume: (position: number) => send({ type: "resume", position }),
+      sendSeek: (position: number) => send({ type: "seek", position }),
+      sendStop: () => send({ type: "stop" }),
+      sendHeartbeat: (position: number, playing: boolean) =>
         send({ type: "heartbeat", position, playing }),
-      [send],
-    ),
-  };
+    }),
+    [send],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -123,6 +116,8 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               subtitles: Boolean(msg.subtitles),
               playing: Boolean(msg.playing),
               position: (msg.position as number) ?? 0,
+              hlsSessionId: (msg.hlsSessionId as string) || null,
+              commandSeq: prev.commandSeq + 1,
             }));
             break;
           case "play":
@@ -131,9 +126,11 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               ratingKey: (msg.ratingKey as string) || null,
               title: (msg.title as string) || null,
               subtitles: Boolean(msg.subtitles),
+              hlsSessionId: (msg.hlsSessionId as string) || null,
               playing: true,
               position: 0,
               hostDisconnected: false,
+              commandSeq: prev.commandSeq + 1,
             }));
             break;
           case "pause":
@@ -141,6 +138,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               ...prev,
               playing: false,
               position: (msg.position as number) ?? prev.position,
+              commandSeq: prev.commandSeq + 1,
             }));
             break;
           case "resume":
@@ -148,12 +146,14 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               ...prev,
               playing: true,
               position: (msg.position as number) ?? prev.position,
+              commandSeq: prev.commandSeq + 1,
             }));
             break;
           case "seek":
             setState((prev) => ({
               ...prev,
               position: (msg.position as number) ?? prev.position,
+              commandSeq: prev.commandSeq + 1,
             }));
             break;
           case "stop":
@@ -161,11 +161,14 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               ...prev,
               ratingKey: null,
               title: null,
+              hlsSessionId: null,
               playing: false,
               position: 0,
+              commandSeq: prev.commandSeq + 1,
             }));
             break;
           case "heartbeat":
+            // Only update position — no commandSeq bump, so drift correction won't fire
             setState((prev) => ({
               ...prev,
               position: (msg.position as number) ?? prev.position,

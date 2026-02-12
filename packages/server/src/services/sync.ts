@@ -2,6 +2,48 @@ import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Server } from "http";
 import { isValidSession } from "../middleware/auth.js";
 import { instanceHosts } from "../routes/discord.js";
+import { plexFetch } from "./plex.js";
+import { getPlexTranscodeKey, markTranscodeStopped, notifyPlexStopped } from "../routes/plex.js";
+
+const OUR_CLIENT_ID = "plex-discord-theater";
+
+/**
+ * Stop a Plex transcode using the mapped Plex internal key.
+ * Our session UUID differs from Plex's internal transcode key, so we use
+ * the mapping populated when the manifest was first fetched.
+ */
+async function killPlexTranscode(hlsSessionId: string | null): Promise<void> {
+  if (!hlsSessionId) return;
+
+  const plexKey = getPlexTranscodeKey(hlsSessionId);
+  const stopKey = plexKey || hlsSessionId;
+
+  // Stop the Plex transcode FIRST, then clear the mapping.
+  // This avoids a race where the DELETE endpoint arrives while we're still
+  // stopping — it can still find the mapping and send a proper stop with the
+  // Plex key (which Plex handles idempotently).
+  try {
+    const res = await plexFetch(
+      "/video/:/transcode/universal/stop",
+      { session: stopKey },
+      {
+        "X-Plex-Session-Identifier": stopKey,
+        "X-Plex-Client-Identifier": OUR_CLIENT_ID,
+      },
+    );
+    console.log("[Sync] Stop transcode", stopKey.substring(0, 8),
+      plexKey ? "(mapped plex key)" : "(our UUID, no mapping)",
+      "→", res.status);
+  } catch (err) {
+    console.error("[Sync] Stop transcode error:", err);
+  }
+
+  // Now clear the mapping and block segment proxy
+  markTranscodeStopped(hlsSessionId);
+
+  // Notify Plex that playback stopped so it clears per-client state
+  notifyPlexStopped(null, hlsSessionId).catch(() => {});
+}
 
 interface RoomClient {
   ws: WebSocket;
@@ -16,6 +58,7 @@ interface RoomState {
   playing: boolean;
   position: number;
   updatedAt: number;
+  hlsSessionId: string | null;
 }
 
 interface Room {
@@ -39,6 +82,7 @@ function getOrCreateRoom(instanceId: string): Room {
         playing: false,
         position: 0,
         updatedAt: Date.now(),
+        hlsSessionId: null,
       },
     };
     rooms.set(instanceId, room);
@@ -127,6 +171,11 @@ export function attachWebSocketServer(server: Server): void {
         roomId = instanceId;
         room.clients.add(client);
 
+        // If the host is (re)joining and there are other clients, clear their disconnect banner
+        if (isHost && room.clients.size > 1) {
+          broadcast(room, ws, { type: "host-reconnected" });
+        }
+
         // Send current state to newly joined client
         sendTo(ws, {
           type: "state",
@@ -135,6 +184,7 @@ export function attachWebSocketServer(server: Server): void {
           subtitles: room.state.subtitles,
           playing: room.state.playing,
           position: interpolatedPosition(room.state),
+          hlsSessionId: room.state.hlsSessionId,
         });
 
         return;
@@ -157,6 +207,7 @@ export function attachWebSocketServer(server: Server): void {
           room.state.ratingKey = (msg.ratingKey as string) || null;
           room.state.title = (msg.title as string) || null;
           room.state.subtitles = Boolean(msg.subtitles);
+          room.state.hlsSessionId = (msg.hlsSessionId as string) || null;
           room.state.playing = true;
           room.state.position = 0;
           room.state.updatedAt = Date.now();
@@ -165,6 +216,7 @@ export function attachWebSocketServer(server: Server): void {
             ratingKey: room.state.ratingKey,
             title: room.state.title,
             subtitles: room.state.subtitles,
+            hlsSessionId: room.state.hlsSessionId,
           });
           break;
         }
@@ -189,12 +241,18 @@ export function attachWebSocketServer(server: Server): void {
           break;
         }
         case "stop": {
+          // Capture before clearing so we can kill the exact Plex transcode
+          const stoppingSessionId = room.state.hlsSessionId;
           room.state.ratingKey = null;
           room.state.title = null;
+          room.state.hlsSessionId = null;
           room.state.playing = false;
           room.state.position = 0;
           room.state.updatedAt = Date.now();
           broadcast(room, ws, { type: "stop" });
+          // Kill the Plex transcode server-side so it dies even if viewers
+          // are still fetching segments (their hls.js takes a moment to tear down)
+          killPlexTranscode(stoppingSessionId).catch(() => {});
           break;
         }
         case "heartbeat": {
@@ -219,7 +277,15 @@ export function attachWebSocketServer(server: Server): void {
       room.clients.delete(client);
 
       if (client.isHost) {
+        // Capture before clearing so we can kill the exact Plex transcode
+        const disconnectedSessionId = room.state.hlsSessionId;
+        // Clear playback state so new joiners don't try to load a dead HLS session
+        room.state.playing = false;
+        room.state.hlsSessionId = null;
+        // Keep ratingKey and title so viewers know what WAS playing
         broadcast(room, ws, { type: "host-disconnected" });
+        // Kill the Plex transcode server-side
+        killPlexTranscode(disconnectedSessionId).catch(() => {});
       }
 
       if (room.clients.size === 0) {
