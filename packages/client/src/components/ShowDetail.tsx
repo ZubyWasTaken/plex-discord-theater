@@ -5,6 +5,7 @@ import { MovieCard } from "./MovieCard";
 interface ShowDetailProps {
   item: PlexItem;
   onSelectSeason: (season: PlexItem, show: PlexItem) => void;
+  onReplaceWithSeason?: (season: PlexItem, show: PlexItem) => void;
   onBack: () => void;
 }
 
@@ -15,7 +16,7 @@ function authUrl(url: string): string {
   return `${url}${sep}token=${encodeURIComponent(token)}`;
 }
 
-export function ShowDetail({ item, onSelectSeason, onBack }: ShowDetailProps) {
+export function ShowDetail({ item, onSelectSeason, onReplaceWithSeason, onBack }: ShowDetailProps) {
   const [meta, setMeta] = useState<PlexMeta | null>(null);
   const [seasons, setSeasons] = useState<PlexItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,10 +32,12 @@ export function ShowDetail({ item, onSelectSeason, onBack }: ShowDetailProps) {
         setMeta(m);
         setSeasons(c.items);
 
-        // Single-season show: auto-navigate directly to episode list
+        // Single-season show: replace this view with the season view
+        // so back goes to library instead of looping through auto-nav
         if (c.items.length === 1 && !autoNavigated) {
           setAutoNavigated(true);
-          onSelectSeason(c.items[0], item);
+          const nav = onReplaceWithSeason ?? onSelectSeason;
+          nav(c.items[0], item);
         }
       })
       .catch(console.error)

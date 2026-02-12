@@ -17,11 +17,12 @@ const PAGE_SIZE = 50;
 interface LibraryProps {
   isHost: boolean;
   onSelect: (item: PlexItem) => void;
+  activeSection: string | null;
+  onActiveSectionChange: (id: string) => void;
 }
 
-export function Library({ isHost, onSelect }: LibraryProps) {
+export function Library({ isHost, onSelect, activeSection, onActiveSectionChange }: LibraryProps) {
   const [sections, setSections] = useState<PlexSection[]>([]);
-  const [activeSection, setActiveSection] = useState<string | null>(null);
   const [items, setItems] = useState<PlexItem[]>([]);
   const [totalSize, setTotalSize] = useState(0);
   const [searchResults, setSearchResults] = useState<PlexItem[] | null>(null);
@@ -37,7 +38,8 @@ export function Library({ isHost, onSelect }: LibraryProps) {
     fetchSections()
       .then(({ sections: s }) => {
         setSections(s);
-        if (s.length > 0) setActiveSection(s[0].id);
+        // Only default to first section if no section is persisted from a previous visit
+        if (s.length > 0 && !activeSection) onActiveSectionChange(s[0].id);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -153,7 +155,7 @@ export function Library({ isHost, onSelect }: LibraryProps) {
           {sections.map((s) => (
             <button
               key={s.id}
-              onClick={() => setActiveSection(s.id)}
+              onClick={() => onActiveSectionChange(s.id)}
               style={{
                 ...styles.tab,
                 ...(s.id === activeSection ? styles.tabActive : {}),

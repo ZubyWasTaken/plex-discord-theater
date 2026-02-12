@@ -40,8 +40,15 @@ export function App() {
     prevSyncIsHost.current = syncState.isHost;
   }, [syncState.isHost]);
 
+  // Persist active library section across navigation
+  const [librarySection, setLibrarySection] = useState<string | null>(null);
+
   const pushView = useCallback((v: View) => {
     setViewStack((s) => [...s, v]);
+  }, []);
+
+  const replaceView = useCallback((v: View) => {
+    setViewStack((s) => (s.length > 1 ? [...s.slice(0, -1), v] : [v]));
   }, []);
 
   const popView = useCallback(() => {
@@ -121,6 +128,12 @@ export function App() {
     pushView({ kind: "season", item: season, show });
   }, [pushView]);
 
+  // For single-season shows: replace the show view with the season view
+  // so back goes straight to library instead of looping
+  const handleReplaceShowWithSeason = useCallback((season: PlexItem, show: PlexItem) => {
+    replaceView({ kind: "season", item: season, show });
+  }, [replaceView]);
+
   const handleSeasonEpisode = useCallback((episode: PlexItem) => {
     pushView({ kind: "detail", item: episode });
   }, [pushView]);
@@ -190,7 +203,12 @@ export function App() {
               Waiting for host to start playback...
             </div>
           )}
-          <Library isHost={effectiveIsHost} onSelect={handleSelect} />
+          <Library
+            isHost={effectiveIsHost}
+            onSelect={handleSelect}
+            activeSection={librarySection}
+            onActiveSectionChange={setLibrarySection}
+          />
         </>
       )}
 
@@ -198,6 +216,7 @@ export function App() {
         <ShowDetail
           item={view.item}
           onSelectSeason={handleShowSeason}
+          onReplaceWithSeason={handleReplaceShowWithSeason}
           onBack={popView}
         />
       )}
