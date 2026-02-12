@@ -8,11 +8,13 @@ interface SeasonDetailProps {
   onBack: () => void;
 }
 
-function authUrl(url: string): string {
+function authUrl(url: string, w?: number, h?: number): string {
   const token = getSessionToken();
   if (!token || !url) return url;
   const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}token=${encodeURIComponent(token)}`;
+  let out = `${url}${sep}token=${encodeURIComponent(token)}`;
+  if (w && h) out += `&w=${w}&h=${h}`;
+  return out;
 }
 
 export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDetailProps) {
@@ -71,7 +73,7 @@ export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDe
               }}
             >
               {ep.thumb ? (
-                <img src={authUrl(ep.thumb)} alt="" style={styles.episodeThumb} loading="lazy" />
+                <img src={authUrl(ep.thumb, 320, 180)} alt="" style={styles.episodeThumb} loading="lazy" />
               ) : (
                 <div style={styles.episodePlaceholder}>No Image</div>
               )}

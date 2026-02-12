@@ -6,11 +6,13 @@ interface MovieCardProps {
   onClick: (item: PlexItem) => void;
 }
 
-function authThumbUrl(thumb: string): string {
+function authThumbUrl(thumb: string, w?: number, h?: number): string {
   const token = getSessionToken();
   if (!token) return thumb;
   const sep = thumb.includes("?") ? "&" : "?";
-  return `${thumb}${sep}token=${encodeURIComponent(token)}`;
+  let url = `${thumb}${sep}token=${encodeURIComponent(token)}`;
+  if (w && h) url += `&w=${w}&h=${h}`;
+  return url;
 }
 
 export function MovieCard({ item, onClick }: MovieCardProps) {
@@ -30,7 +32,7 @@ export function MovieCard({ item, onClick }: MovieCardProps) {
       }}
     >
       {item.thumb ? (
-        <img src={authThumbUrl(item.thumb)} alt={item.title} style={styles.poster} loading="lazy" />
+        <img src={authThumbUrl(item.thumb, 320, 480)} alt={item.title} style={styles.poster} loading="lazy" />
       ) : (
         <div style={styles.placeholder}>No Poster</div>
       )}

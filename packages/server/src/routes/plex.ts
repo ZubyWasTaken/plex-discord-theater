@@ -361,6 +361,7 @@ router.put("/streams/:partId", async (req: Request, res: Response) => {
 /**
  * GET /api/plex/thumb/*
  * Proxy Plex images (posters, artwork).
+ * Optional query params ?w=320&h=480 to resize via Plex's photo transcoder.
  */
 router.get("/thumb/*", async (req: Request, res: Response) => {
   const imagePath = "/" + (req.params[0] as string);
@@ -369,8 +370,12 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
     return;
   }
 
+  const w = req.query.w as string | undefined;
+  const h = req.query.h as string | undefined;
+  const cacheKey = w && h ? `${imagePath}:${w}x${h}` : imagePath;
+
   // Check server-side cache first
-  const cached = thumbCache.get(imagePath);
+  const cached = thumbCache.get(cacheKey);
   if (cached) {
     res.setHeader("Content-Type", cached.contentType);
     res.setHeader("Cache-Control", "public, max-age=86400");
@@ -379,7 +384,17 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
   }
 
   try {
-    const plexRes = await plexFetch(imagePath);
+    // Use Plex photo transcoder for resized images, raw fetch for full-size
+    const plexRes = w && h
+      ? await plexFetch("/photo/:/transcode", {
+          width: w,
+          height: h,
+          minSize: "1",
+          upscale: "1",
+          url: imagePath,
+        })
+      : await plexFetch(imagePath);
+
     if (!plexRes.ok) {
       res.status(plexRes.status).end();
       return;
@@ -395,7 +410,7 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
 
     // Store in cache (fire-and-forget, don't block response)
     try {
-      thumbCache.set(imagePath, resolvedType, data);
+      thumbCache.set(cacheKey, resolvedType, data);
     } catch (cacheErr) {
       console.error("Thumb cache write error:", cacheErr);
     }
