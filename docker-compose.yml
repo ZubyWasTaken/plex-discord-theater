@@ -15,6 +15,9 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - ALLOWED_GUILD_IDS=${ALLOWED_GUILD_IDS}
       - PORT=2001
+      - THUMB_CACHE_DIR=/data
+    volumes:
+      - /mnt/user/appdata/plex-discord-theater:/data
     restart: unless-stopped
     logging:
       driver: json-file

@@ -36,7 +36,11 @@ export function MovieCard({ item, onClick }: MovieCardProps) {
       )}
       <div style={styles.info}>
         <div style={styles.title}>{item.title}</div>
-        {item.year && <div style={styles.year}>{item.year}</div>}
+        {item.type === "season" && item.leafCount != null ? (
+          <div style={styles.year}>{item.leafCount} {item.leafCount === 1 ? "episode" : "episodes"}</div>
+        ) : item.year ? (
+          <div style={styles.year}>{item.year}</div>
+        ) : null}
       </div>
     </button>
   );

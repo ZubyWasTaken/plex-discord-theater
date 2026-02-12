@@ -78,6 +78,11 @@ export interface PlexItem {
   year?: number;
   type: string;
   thumb: string | null;
+  index?: number;
+  parentIndex?: number;
+  parentTitle?: string;
+  leafCount?: number;
+  childCount?: number;
 }
 
 export interface PlexSection {
@@ -139,6 +144,10 @@ export function fetchSectionItems(
 
 export function searchPlex(query: string): Promise<{ items: PlexItem[] }> {
   return apiGet(`/api/plex/search?q=${encodeURIComponent(query)}`);
+}
+
+export function fetchChildren(ratingKey: string): Promise<{ items: PlexItem[] }> {
+  return apiGet(`/api/plex/children/${encodeURIComponent(ratingKey)}`);
 }
 
 export function fetchMeta(ratingKey: string): Promise<PlexMeta> {

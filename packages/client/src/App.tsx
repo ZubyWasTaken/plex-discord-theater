@@ -3,23 +3,40 @@ import { useDiscord } from "./hooks/useDiscord";
 import { useSync } from "./hooks/useSync";
 import { Library } from "./components/Library";
 import { MovieDetail } from "./components/MovieDetail";
+import { ShowDetail } from "./components/ShowDetail";
+import { SeasonDetail } from "./components/SeasonDetail";
 import { Player } from "./components/Player";
 import type { PlexItem } from "./lib/api";
 
 type View =
   | { kind: "library" }
+  | { kind: "show"; item: PlexItem }
+  | { kind: "season"; item: PlexItem; show: PlexItem }
   | { kind: "detail"; item: PlexItem }
   | { kind: "player"; item: PlexItem; subtitles: boolean };
 
 export function App() {
   const { isReady, isHost, userId, username, instanceId, error } = useDiscord();
-  const [view, setView] = useState<View>({ kind: "library" });
+  const [viewStack, setViewStack] = useState<View[]>([{ kind: "library" }]);
+  const view = viewStack[viewStack.length - 1];
 
   const { state: syncState, actions: syncActions } = useSync({
     instanceId,
     userId,
     enabled: isReady,
   });
+
+  const pushView = useCallback((v: View) => {
+    setViewStack((s) => [...s, v]);
+  }, []);
+
+  const popView = useCallback(() => {
+    setViewStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+  }, []);
+
+  const goHome = useCallback(() => {
+    setViewStack([{ kind: "library" }]);
+  }, []);
 
   // Track previous ratingKey to detect changes
   const prevRatingKeyRef = useRef<string | null>(null);
@@ -32,9 +49,9 @@ export function App() {
     const newKey = syncState.ratingKey;
     prevRatingKeyRef.current = newKey;
 
-    // Host started playing — navigate viewer to player
+    // Host started playing — push player onto stack
     if (newKey && newKey !== prevKey) {
-      setView({
+      const playerView: View = {
         kind: "player",
         item: {
           ratingKey: newKey,
@@ -43,26 +60,56 @@ export function App() {
           thumb: null,
         },
         subtitles: syncState.subtitles,
-      });
+      };
+      setViewStack((s) => [...s, playerView]);
     }
 
-    // Host stopped — navigate viewer back to library
+    // Host stopped — pop back from player if we're on one
     if (!newKey && prevKey) {
-      setView({ kind: "library" });
+      setViewStack((s) => {
+        const top = s[s.length - 1];
+        if (top?.kind === "player") return s.slice(0, -1);
+        return s;
+      });
     }
   }, [isHost, syncState.ratingKey, syncState.title, syncState.subtitles]);
 
+  const handleRejoin = useCallback(() => {
+    if (!syncState.ratingKey) return;
+    pushView({
+      kind: "player",
+      item: {
+        ratingKey: syncState.ratingKey,
+        title: syncState.title || "Untitled",
+        type: "movie",
+        thumb: null,
+      },
+      subtitles: syncState.subtitles,
+    });
+  }, [syncState.ratingKey, syncState.title, syncState.subtitles, pushView]);
+
+  // Show "Now Playing" banner when viewer is not on the player but host is playing
+  const showNowPlaying = !isHost && !!syncState.ratingKey && view.kind !== "player";
+
   const handleSelect = useCallback((item: PlexItem) => {
-    setView({ kind: "detail", item });
-  }, []);
+    if (item.type === "show") {
+      pushView({ kind: "show", item });
+    } else {
+      pushView({ kind: "detail", item });
+    }
+  }, [pushView]);
 
   const handlePlay = useCallback((item: PlexItem, subtitles: boolean) => {
-    setView({ kind: "player", item, subtitles });
-  }, []);
+    pushView({ kind: "player", item, subtitles });
+  }, [pushView]);
 
-  const handleBack = useCallback(() => {
-    setView({ kind: "library" });
-  }, []);
+  const handleShowSeason = useCallback((season: PlexItem, show: PlexItem) => {
+    pushView({ kind: "season", item: season, show });
+  }, [pushView]);
+
+  const handleSeasonEpisode = useCallback((episode: PlexItem) => {
+    pushView({ kind: "detail", item: episode });
+  }, [pushView]);
 
   if (error) {
     return (
@@ -84,15 +131,41 @@ export function App() {
 
   return (
     <div style={styles.app}>
+      {/* Header — visible on all non-player views */}
+      {view.kind !== "player" && (
+        <header style={styles.header}>
+          {view.kind !== "library" ? (
+            <button onClick={goHome} style={styles.homeBtn}>
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+                <path d="M3 10L10 3L17 10M5 8.5V16A1 1 0 006 17H9V12H11V17H14A1 1 0 0015 16V8.5"
+                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Home
+            </button>
+          ) : (
+            <h1 style={styles.logo}>Watch Together</h1>
+          )}
+          <span style={styles.user}>
+            {username} {isHost ? "(Host)" : "(Viewer)"}
+            {!isHost && syncState.connected && " \u2022 Synced"}
+          </span>
+        </header>
+      )}
+
+      {/* Now Playing rejoin banner for viewers */}
+      {showNowPlaying && (
+        <div style={styles.nowPlayingBanner}>
+          <span style={styles.nowPlayingText}>
+            Now playing: <strong>{syncState.title || "Untitled"}</strong>
+          </span>
+          <button onClick={handleRejoin} style={styles.nowPlayingBtn}>
+            Watch
+          </button>
+        </div>
+      )}
+
       {view.kind === "library" && (
         <>
-          <header style={styles.header}>
-            <h1 style={styles.logo}>Watch Together</h1>
-            <span style={styles.user}>
-              {username} {isHost ? "(Host)" : "(Viewer)"}
-              {!isHost && syncState.connected && " \u2022 Synced"}
-            </span>
-          </header>
           {!isHost && !syncState.ratingKey && (
             <div style={styles.waitingBanner}>
               Waiting for host to start playback...
@@ -102,12 +175,29 @@ export function App() {
         </>
       )}
 
+      {view.kind === "show" && (
+        <ShowDetail
+          item={view.item}
+          onSelectSeason={handleShowSeason}
+          onBack={popView}
+        />
+      )}
+
+      {view.kind === "season" && (
+        <SeasonDetail
+          season={view.item}
+          show={view.show}
+          onSelectEpisode={handleSeasonEpisode}
+          onBack={popView}
+        />
+      )}
+
       {view.kind === "detail" && (
         <MovieDetail
           item={view.item}
           isHost={isHost}
           onPlay={handlePlay}
-          onBack={handleBack}
+          onBack={popView}
         />
       )}
 
@@ -116,7 +206,7 @@ export function App() {
           item={view.item}
           isHost={isHost}
           subtitles={view.subtitles}
-          onBack={handleBack}
+          onBack={popView}
           syncState={syncState}
           syncActions={syncActions}
         />
@@ -142,6 +232,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     color: "#e5a00d",
     letterSpacing: "-0.02em",
+  },
+  homeBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "6px 14px",
+    borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.1)",
+    background: "rgba(255,255,255,0.05)",
+    color: "#e5a00d",
+    cursor: "pointer",
+    fontSize: "14px",
+    fontWeight: 600,
+    fontFamily: "inherit",
   },
   user: {
     fontSize: "13px",
@@ -187,5 +291,30 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "14px",
     fontWeight: 500,
     borderBottom: "1px solid rgba(229,160,13,0.2)",
+  },
+  nowPlayingBanner: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "12px",
+    padding: "10px 24px",
+    background: "rgba(229,160,13,0.1)",
+    borderBottom: "1px solid rgba(229,160,13,0.2)",
+  },
+  nowPlayingText: {
+    fontSize: "14px",
+    color: "#e5a00d",
+    fontWeight: 500,
+  },
+  nowPlayingBtn: {
+    padding: "5px 16px",
+    borderRadius: "6px",
+    border: "none",
+    background: "#e5a00d",
+    color: "#000",
+    fontSize: "13px",
+    fontWeight: 700,
+    fontFamily: "inherit",
+    cursor: "pointer",
   },
 };

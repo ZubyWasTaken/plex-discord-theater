@@ -9,10 +9,12 @@ const TTL_MS = parseInt(process.env.THUMB_CACHE_TTL_MS || "", 10) || DEFAULT_TTL
 const MAX_BYTES =
   (parseInt(process.env.THUMB_CACHE_MAX_MB || "", 10) || DEFAULT_MAX_MB) * 1024 * 1024;
 
-const dbDir = path.resolve(
-  import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname),
-  "../../data",
-);
+const dbDir = process.env.THUMB_CACHE_DIR
+  ? path.resolve(process.env.THUMB_CACHE_DIR)
+  : path.resolve(
+      import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname),
+      "../../data",
+    );
 fs.mkdirSync(dbDir, { recursive: true });
 
 const db = new Database(path.join(dbDir, "thumb-cache.sqlite"));

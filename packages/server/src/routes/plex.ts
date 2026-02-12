@@ -74,6 +74,11 @@ interface PlexMetadataItem {
   art?: string;
   Genre?: Array<{ tag: string }>;
   Media?: PlexMedia[];
+  index?: number;
+  parentIndex?: number;
+  parentTitle?: string;
+  leafCount?: number;
+  childCount?: number;
 }
 
 // ─── Library browsing ────────────────────────────────────────────
@@ -82,7 +87,7 @@ interface PlexMetadataItem {
  * GET /api/plex/sections
  * List all library sections (Movies, TV Shows, etc.)
  */
-const ALLOWED_SECTION_TYPES = new Set(["movie"]);
+const ALLOWED_SECTION_TYPES = new Set(["movie", "show"]);
 
 router.get("/sections", async (_req: Request, res: Response) => {
   try {
@@ -289,6 +294,29 @@ router.get("/meta/:ratingKey", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("Metadata error:", err);
     res.status(502).json({ error: "Failed to fetch metadata" });
+  }
+});
+
+/**
+ * GET /api/plex/children/:ratingKey
+ * Get children of a container (show → seasons, season → episodes).
+ */
+router.get("/children/:ratingKey", async (req: Request, res: Response) => {
+  const ratingKey = req.params.ratingKey as string;
+  if (!NUMERIC_RE.test(ratingKey)) {
+    res.status(400).json({ error: "Invalid rating key" });
+    return;
+  }
+
+  try {
+    const data = await plexJSON<{ MediaContainer: { Metadata?: PlexMetadataItem[] } }>(
+      `/library/metadata/${ratingKey}/children`,
+    );
+    const items = (data.MediaContainer.Metadata || []).map(mapItem);
+    res.json({ items });
+  } catch (err) {
+    console.error("Children error:", err);
+    res.status(502).json({ error: "Failed to fetch children" });
   }
 });
 
@@ -945,6 +973,11 @@ function mapItem(m: PlexMetadataItem) {
     year: m.year,
     type: m.type,
     thumb: m.thumb ? `/api/plex/thumb${m.thumb}` : null,
+    ...(m.index != null && { index: m.index }),
+    ...(m.parentIndex != null && { parentIndex: m.parentIndex }),
+    ...(m.parentTitle != null && { parentTitle: m.parentTitle }),
+    ...(m.leafCount != null && { leafCount: m.leafCount }),
+    ...(m.childCount != null && { childCount: m.childCount }),
   };
 }
 

@@ -64,8 +64,13 @@ RUN apk add --no-cache python3 make g++ && \
 COPY --from=build /app/packages/server/dist packages/server/dist
 COPY --from=build /app/packages/client/dist packages/client/dist
 
-# Persistent data directory (thumb cache SQLite)
-RUN mkdir -p packages/server/data && chown -R appuser:appgroup packages/server/data
+# Persistent data directory (thumb cache SQLite) — mountable via THUMB_CACHE_DIR
+RUN mkdir -p /data
+
+# Entrypoint script: fix /data ownership then drop to appuser
+RUN printf '#!/bin/sh\nchown -R appuser:appgroup /data\nexec su-exec appuser "$@"\n' > /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
+RUN apk add --no-cache su-exec
 
 ENV NODE_ENV=production
 EXPOSE 2001
@@ -74,7 +79,5 @@ EXPOSE 2001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:2001/ || exit 1
 
-USER appuser
-
-ENTRYPOINT ["tini", "--"]
+ENTRYPOINT ["tini", "--", "entrypoint.sh"]
 CMD ["node", "packages/server/dist/index.js"]
