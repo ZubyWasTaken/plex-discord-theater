@@ -165,11 +165,6 @@ export function Library({ isHost, onSelect }: LibraryProps) {
         </div>
       )}
 
-      {!isHost && (
-        <div style={styles.notice}>
-          Waiting for the host to pick something to watch...
-        </div>
-      )}
 
       {loading ? (
         <div style={styles.loadingWrap}>
@@ -234,13 +229,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#e5a00d",
     borderColor: "rgba(229,160,13,0.3)",
     fontWeight: 600,
-  },
-  notice: {
-    textAlign: "center",
-    color: "#666",
-    padding: "8px 24px",
-    fontSize: "14px",
-    fontStyle: "italic",
   },
   grid: {
     display: "grid",

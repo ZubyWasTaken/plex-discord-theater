@@ -137,56 +137,42 @@ export function MovieDetail({ item, isHost, onPlay, onBack }: MovieDetailProps) 
                 <p style={styles.summary}>{meta.summary}</p>
               )}
 
-              {/* Audio tracks */}
-              {meta.audioTracks.length > 1 && (
-                <div style={styles.trackSection}>
-                  <label style={styles.trackLabel}>Audio</label>
-                  <div style={styles.chips}>
-                    {meta.audioTracks.map((t) => (
-                      <button
-                        key={t.id}
-                        onClick={() => setSelectedAudio(t.id)}
-                        style={{
-                          ...styles.chip,
-                          ...(t.id === selectedAudio ? styles.chipActive : {}),
-                        }}
-                      >
-                        {t.title}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Subtitle tracks */}
-              {meta.subtitleTracks.length > 0 && (
-                <div style={styles.trackSection}>
-                  <label style={styles.trackLabel}>Subtitles</label>
-                  <div style={styles.chips}>
-                    <button
-                      onClick={() => setSelectedSubtitle(null)}
-                      style={{
-                        ...styles.chip,
-                        ...(selectedSubtitle === null ? styles.chipActive : {}),
-                      }}
+              {/* Audio & Subtitle selectors */}
+              <div style={styles.trackRow}>
+                {meta.audioTracks.length > 1 && (
+                  <div style={styles.trackField}>
+                    <label style={styles.trackLabel}>Audio</label>
+                    <select
+                      value={selectedAudio ?? ""}
+                      onChange={(e) => setSelectedAudio(Number(e.target.value))}
+                      style={styles.trackSelect}
                     >
-                      None
-                    </button>
-                    {meta.subtitleTracks.map((t) => (
-                      <button
-                        key={t.id}
-                        onClick={() => setSelectedSubtitle(t.id)}
-                        style={{
-                          ...styles.chip,
-                          ...(t.id === selectedSubtitle ? styles.chipActive : {}),
-                        }}
-                      >
-                        {t.title}
-                      </button>
-                    ))}
+                      {meta.audioTracks.map((t) => (
+                        <option key={t.id} value={t.id}>{t.title}</option>
+                      ))}
+                    </select>
                   </div>
-                </div>
-              )}
+                )}
+
+                {meta.subtitleTracks.length > 0 && (
+                  <div style={styles.trackField}>
+                    <label style={styles.trackLabel}>Subtitles</label>
+                    <select
+                      value={selectedSubtitle ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setSelectedSubtitle(v === "" ? null : Number(v));
+                      }}
+                      style={styles.trackSelect}
+                    >
+                      <option value="">None</option>
+                      {meta.subtitleTracks.map((t) => (
+                        <option key={t.id} value={t.id}>{t.title}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
 
               {error && <p style={styles.errorText}>{error}</p>}
 
@@ -368,8 +354,14 @@ const styles: Record<string, React.CSSProperties> = {
     WebkitBoxOrient: "vertical",
     overflow: "hidden",
   },
-  trackSection: {
+  trackRow: {
+    display: "flex",
+    gap: "16px",
     marginBottom: "20px",
+  },
+  trackField: {
+    flex: 1,
+    minWidth: 0,
   },
   trackLabel: {
     display: "block",
@@ -378,30 +370,19 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#888",
     textTransform: "uppercase",
     letterSpacing: "0.05em",
-    marginBottom: "8px",
+    marginBottom: "6px",
   },
-  chips: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "8px",
-  },
-  chip: {
-    padding: "7px 16px",
-    borderRadius: "20px",
-    border: "1px solid rgba(255,255,255,0.1)",
-    background: "rgba(255,255,255,0.05)",
-    color: "#ccc",
-    cursor: "pointer",
-    fontSize: "13px",
-    fontWeight: 500,
+  trackSelect: {
+    width: "100%",
+    padding: "9px 12px",
+    borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.06)",
+    color: "#ddd",
+    fontSize: "14px",
     fontFamily: "inherit",
-    transition: "all 0.15s ease",
-  },
-  chipActive: {
-    background: "rgba(229,160,13,0.15)",
-    borderColor: "#e5a00d",
-    color: "#e5a00d",
-    fontWeight: 600,
+    cursor: "pointer",
+    appearance: "auto" as React.CSSProperties["appearance"],
   },
   actions: {
     marginTop: "28px",
