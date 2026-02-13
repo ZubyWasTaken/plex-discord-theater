@@ -1,22 +1,49 @@
 # Plex Discord Theater
 
-A Discord Activity that lets you browse a Plex library and watch movies and TV shows together in a voice channel — synchronized playback, host controls, and all streamed through Discord.
+A Discord Activity that lets you browse your Plex library and watch movies and TV shows together in a voice channel — synchronized playback, host controls, and all streamed through Discord.
 
 ## Features
 
 - **Browse your Plex library** — movies and TV shows with search, genre filters, and sorting
 - **Synchronized playback** — the host controls play/pause/seek and all viewers stay in sync
 - **Audio & subtitle selection** — pick audio tracks and subtitles before playing
-- **Automatic host promotion** — if the host leaves, the next viewer is promoted so the session keeps going
+- **P2P segment sharing** — viewers share HLS segments with each other, reducing server bandwidth
+- **Automatic host promotion** — if the host leaves, the next viewer is promoted so the session continues
+- **Thumbnail caching** — artwork is cached server-side in SQLite for fast browsing
 - **Secure** — your Plex token never leaves the server; the backend proxies everything
 
 ## How It Works
 
-The app runs as a Discord Activity (iframe inside Discord). A backend server proxies all Plex API calls and HLS video segments so nothing is exposed to the client. The first user to join becomes the host and can browse and start playback. Everyone else watches in sync via WebSocket.
+```
+Discord Voice Channel
+  └─ Activity (iframe)
+       └─ React client (hls.js + P2P)
+            ├─ WebRTC ↔ other viewers (segment sharing)
+            └─ Express backend (WebSocket sync + API proxy)
+                 └─ Plex Media Server (HLS transcoding)
+```
 
-```
-Plex (transcodes) → Backend (proxy) → Discord → Viewers
-```
+The first user to join becomes the host and can browse the library and start playback. Everyone else watches in sync via WebSocket. The backend proxies all Plex API calls and HLS video segments so nothing is exposed directly to clients.
+
+### P2P Segment Sharing
+
+Viewers in the same watch session automatically form a peer-to-peer mesh using WebRTC. When one viewer downloads an HLS segment from the server, they share it directly with other viewers — so the same segment doesn't need to be fetched from Plex multiple times.
+
+- **BitTorrent tracker** — the server runs an embedded [bittorrent-tracker](https://github.com/webtorrent/bittorrent-tracker) over WebSocket for peer discovery and signaling
+- **Swarm per session** — viewers watching the same content share a swarm ID, so P2P only happens within a watch session
+- **Transparent fallback** — if a segment isn't available from peers in time, it falls back to fetching from the server normally
+- **Tuned for live-ish playback** — wide P2P prefetch window (8000s) with narrow HTTP window (2000s) and capped concurrent HTTP downloads to 1, so peers have time to supply segments before the client fetches them directly
+
+This significantly reduces bandwidth from Plex when multiple people are watching together — the server transcodes once and peers distribute segments amongst themselves.
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Client | React, hls.js, [p2p-media-loader](https://github.com/nicedoc/p2p-media-loader), Discord Embedded App SDK |
+| Server | Express, WebSocket (ws), bittorrent-tracker, better-sqlite3 |
+| Streaming | HLS via Plex transcoder, WebRTC P2P segment sharing |
+| Infrastructure | Docker, Node.js 22 |
 
 ## Prerequisites
 
@@ -44,7 +71,7 @@ Find your token by opening Plex Web, playing any media, then checking the Networ
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` with your values:
 
 ```env
 DISCORD_CLIENT_ID=your_discord_client_id
@@ -52,6 +79,8 @@ DISCORD_CLIENT_SECRET=your_discord_client_secret
 PLEX_URL=http://localhost:32400
 PLEX_TOKEN=your_plex_token
 PORT=3000
+REDIRECT_URI=https://your-public-url.example.com
+ALLOWED_ORIGINS=https://your-public-url.example.com
 ```
 
 For local development, also create `packages/client/.env`:
@@ -62,13 +91,11 @@ VITE_DISCORD_CLIENT_ID=your_discord_client_id
 
 ### 4. Run
 
-#### Production (Docker)
+#### Docker (recommended)
 
 ```bash
 docker compose up --build
 ```
-
-The app is served at `http://localhost:3000`.
 
 #### Local Development
 
@@ -82,7 +109,7 @@ This starts both services concurrently:
 | Service | URL | Description |
 |---------|-----|-------------|
 | Server  | `http://localhost:3000` | Express API + WebSocket |
-| Client  | `http://localhost:5173` | Vite dev server (proxies `/api` → `:3000`) |
+| Client  | `http://localhost:5173` | Vite dev server (proxies `/api` to server) |
 
 #### Tunnel for Discord
 
@@ -109,5 +136,9 @@ Set the resulting `https://xxxx.trycloudflare.com` URL as the URL mapping in you
 |---------|----------|
 | "Failed to connect to Discord" | Make sure you're launching as a Discord Activity from a voice channel, not visiting the URL directly |
 | Library is empty | Check that `PLEX_URL` and `PLEX_TOKEN` are correct and the server can reach Plex |
-| Video won't play | Check browser console for HLS errors. Ensure Plex can transcode |
+| Video won't play | Check browser console for HLS errors; ensure Plex can transcode |
 | Tunnel URL changed | Update the URL mapping in Discord Developer Portal |
+
+## License
+
+[GPL-3.0](LICENSE)

@@ -73,11 +73,12 @@ RUN printf '#!/bin/sh\nchown -R appuser:appgroup /data\nexec su-exec appuser "$@
 RUN apk add --no-cache su-exec
 
 ENV NODE_ENV=production
-EXPOSE 2001
+ENV PORT=3000
+EXPOSE ${PORT}
 
 # Health check — hit a lightweight endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:2001/ || exit 1
+  CMD curl -f http://localhost:${PORT}/ || exit 1
 
 ENTRYPOINT ["tini", "--", "entrypoint.sh"]
 CMD ["node", "packages/server/dist/index.js"]

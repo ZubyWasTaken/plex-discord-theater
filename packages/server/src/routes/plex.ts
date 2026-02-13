@@ -1044,7 +1044,7 @@ function rewriteManifestUrls(m3u8: string, authToken?: string, isSubManifest = f
 
   const cleanPlexToken = (path: string) => path.replace(PLEX_TOKEN_REGEX, "");
 
-  // Rewrite absolute Plex URLs (e.g. http://192.168.0.89:32400/video/...)
+  // Rewrite absolute Plex URLs (e.g. http://localhost:32400/video/...)
   PLEX_URL_REGEX.lastIndex = 0;
   result = result.replace(PLEX_URL_REGEX, (_match: string, path: string) =>
     segProxyUrl(cleanPlexToken(path), authToken),

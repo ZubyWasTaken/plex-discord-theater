@@ -1,6 +1,26 @@
 {
   "name": "plex-discord-theater",
+  "version": "1.0.0",
+  "description": "A Discord Activity that lets you browse your Plex library and watch movies and TV shows together in a voice channel with synchronized playback.",
   "private": true,
+  "license": "GPL-3.0",
+  "author": "Zuby",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ZubyWasTaken/plex-discord-theater.git"
+  },
+  "keywords": [
+    "plex",
+    "discord",
+    "discord-activity",
+    "watch-together",
+    "synchronized-playback",
+    "hls",
+    "streaming"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "packages/server",
     "packages/client"
@@ -10,7 +30,6 @@
     "build": "npm run build -w packages/client && npm run build -w packages/server",
     "start": "npm run start -w packages/server",
     "docker:build": "source .env && docker buildx build --platform linux/amd64 --build-arg VITE_DISCORD_CLIENT_ID=$DISCORD_CLIENT_ID -t plex-discord-theater:latest --load .",
-    "docker:push": "source .env && docker buildx build --platform linux/amd64 --build-arg VITE_DISCORD_CLIENT_ID=$DISCORD_CLIENT_ID -t zubywastaken/plex-discord-theater:latest --push .",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",

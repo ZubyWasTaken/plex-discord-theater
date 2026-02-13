@@ -1,9 +1,12 @@
 services:
   app:
     container_name: plex-discord-theater
-    image: zubywastaken/plex-discord-theater:latest
+    build:
+      context: .
+      args:
+        VITE_DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
     ports:
-      - "2001:2001"
+      - "${PORT:-3000}:${PORT:-3000}"
     environment:
       - NODE_ENV=production
       - PLEX_URL=${PLEX_URL}
@@ -14,13 +17,16 @@ services:
       - REDIRECT_URI=${REDIRECT_URI}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - ALLOWED_GUILD_IDS=${ALLOWED_GUILD_IDS}
-      - PORT=2001
+      - PORT=${PORT:-3000}
       - THUMB_CACHE_DIR=/data
     volumes:
-      - /mnt/user/appdata/plex-discord-theater:/data
+      - app-data:/data
     restart: unless-stopped
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  app-data:
