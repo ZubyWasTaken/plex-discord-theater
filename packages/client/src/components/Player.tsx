@@ -9,6 +9,7 @@ import type { SyncState, SyncActions } from "../hooks/useSync";
 const PING_INTERVAL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const DRIFT_THRESHOLD_S = 2;
+const HEARTBEAT_DRIFT_THRESHOLD_S = 5;
 const MAX_VIEWER_RETRIES = 3;
 
 // Module-scoped so the pending stop survives across Player mount/unmount cycles
@@ -294,6 +295,19 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
       }
     }
   }, [syncState?.commandSeq]);
+
+  // Viewer: periodic drift correction on heartbeats (larger threshold than explicit commands)
+  useEffect(() => {
+    if (isHostRef.current || !syncState) return;
+    const video = videoRef.current;
+    if (!video || !syncState.playing || video.paused) return;
+
+    const drift = Math.abs(video.currentTime - syncState.position);
+    if (drift > HEARTBEAT_DRIFT_THRESHOLD_S) {
+      console.warn(`[Viewer] Heartbeat drift correction: ${drift.toFixed(1)}s`);
+      video.currentTime = syncState.position;
+    }
+  }, [syncState?.position]);
 
   const handleBack = useCallback(() => {
     destroyLocal();
