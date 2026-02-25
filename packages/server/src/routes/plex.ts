@@ -831,6 +831,20 @@ router.get("/hls/seg", async (req: Request, res: Response) => {
     const plexRes = await plexFetch(segPath);
 
     if (!plexRes.ok) {
+      // If Plex returns 404 for a segment, the transcode was killed server-side
+      // (ping timeout, resource pressure, etc.). Mark it dead so we stop proxying
+      // and return 410 immediately for all subsequent requests to this session,
+      // instead of hammering Plex with dozens of doomed requests.
+      if (plexRes.status === 404 && segKeyMatch) {
+        const deadKey = segKeyMatch[1];
+        if (activeTranscodeKeys.has(deadKey)) {
+          console.warn("[HLS seg] Plex returned 404 for active transcode", deadKey.substring(0, 8),
+            "— marking dead");
+          activeTranscodeKeys.delete(deadKey);
+        }
+        res.status(410).end();
+        return;
+      }
       console.error("HLS seg proxy error:", plexRes.status, segPath.substring(0, 100));
       res.status(plexRes.status).end();
       return;
