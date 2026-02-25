@@ -461,6 +461,14 @@ export function getSessionClientId(_sessionId: string): string {
  */
 const activeTranscodeKeys = new Set<string>();
 
+/**
+ * Every Plex transcode key allocated during this server's lifetime.
+ * Unlike activeTranscodeKeys (which is cleared on stop), this persists so
+ * flushStaleTranscodes can identify orphaned transcodes that belong to us
+ * without accidentally killing other Plex clients' HLS sessions.
+ */
+const allKnownPlexKeys = new Set<string>();
+
 /** Mark a Plex transcode key as stopped — segment requests will be rejected. */
 export function markTranscodeStopped(sessionId: string): void {
   const plexKey = plexTranscodeKeys.get(sessionId);
@@ -588,8 +596,10 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
     const transcodes = data.MediaContainer.TranscodeSession || [];
     if (DEBUG) console.log("[HLS] /transcode/sessions count:", transcodes.length);
     for (const t of transcodes) {
-      // Only kill HLS transcodes (our app's protocol) to avoid nuking DASH/direct clients
-      if (t.key && t.protocol === "hls") {
+      // Only kill HLS transcodes whose Plex key we recognize from a manifest we parsed.
+      // Extract UUID from /transcode/sessions/<uuid> path
+      const keyUuid = t.key?.split("/").pop();
+      if (t.key && t.protocol === "hls" && keyUuid && allKnownPlexKeys.has(keyUuid)) {
         if (DEBUG) console.log("[HLS] Killing orphaned HLS transcode:", t.key);
         try {
           await plexFetch(
@@ -767,6 +777,7 @@ router.get(
         plexTranscodeKeys.set(sessionId, plexKeyMatch[1]);
         sessionRatingKeys.set(sessionId, ratingKey);
         activeTranscodeKeys.add(plexKeyMatch[1]);
+        allKnownPlexKeys.add(plexKeyMatch[1]);
         console.log("[HLS] Plex transcode key:", plexKeyMatch[1].substring(0, 8), "for session:", sessionId.substring(0, 8));
       }
 
