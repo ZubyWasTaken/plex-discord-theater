@@ -30,3 +30,6 @@ packages/client/.vite/
 # Server data (thumbnail cache, etc.)
 packages/server/data/
 bun.lock
+
+# Plans
+docs/plans/
