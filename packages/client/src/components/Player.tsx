@@ -296,11 +296,14 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     }
   }, [syncState?.commandSeq]);
 
-  // Viewer: periodic drift correction on heartbeats (larger threshold than explicit commands)
+  // Viewer: periodic drift correction on heartbeats (larger threshold than explicit commands).
+  // Also fires on explicit command position updates, but the command-based effect above
+  // already corrects at a tighter 2s threshold, making this a no-op in that case.
   useEffect(() => {
     if (isHostRef.current || !syncState) return;
     const video = videoRef.current;
     if (!video || !syncState.playing || video.paused) return;
+    if (syncState.position <= 0) return;
 
     const drift = Math.abs(video.currentTime - syncState.position);
     if (drift > HEARTBEAT_DRIFT_THRESHOLD_S) {
