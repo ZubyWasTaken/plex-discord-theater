@@ -466,6 +466,8 @@ const activeTranscodeKeys = new Set<string>();
  * Unlike activeTranscodeKeys (which is cleared on stop), this persists so
  * flushStaleTranscodes can identify orphaned transcodes that belong to us
  * without accidentally killing other Plex clients' HLS sessions.
+ * Grows monotonically but each entry is a 36-char UUID (~72 bytes).
+ * At 10,000 sessions this is < 1 MB — acceptable for a single-instance lifetime.
  */
 const allKnownPlexKeys = new Set<string>();
 
