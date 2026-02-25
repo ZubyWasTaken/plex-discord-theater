@@ -74,7 +74,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     if (heartbeatIntervalRef.current === null) {
       heartbeatIntervalRef.current = setInterval(() => {
         const v = videoRef.current;
-        if (v) {
+        if (v && v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
           syncActionsRef.current?.sendHeartbeat(v.currentTime, !v.paused);
         }
       }, HEARTBEAT_INTERVAL_MS);
@@ -252,7 +252,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
       if (isHostRef.current) {
         heartbeatIntervalRef.current = setInterval(() => {
           const v = videoRef.current;
-          if (v) {
+          if (v && v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             syncActionsRef.current?.sendHeartbeat(v.currentTime, !v.paused);
           }
         }, HEARTBEAT_INTERVAL_MS);
