@@ -293,6 +293,11 @@ export function attachWebSocketServer(server: Server): void {
 
       if (client.isHost) {
         if (room.clients.size > 0) {
+          // Notify viewers that the host disconnected before promoting a new one
+          for (const c of room.clients) {
+            sendTo(c.ws, { type: "host-disconnected" });
+          }
+
           // Promote the first remaining client to host
           const newHost = room.clients.values().next().value!;
           newHost.isHost = true;
