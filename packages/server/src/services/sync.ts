@@ -151,6 +151,8 @@ export function attachWebSocketServer(server: Server): void {
 
     const pingTimer = setInterval(() => {
       if (!alive) {
+        console.log("[Sync] Terminating unresponsive WebSocket",
+          client?.userId?.substring(0, 8) ?? "(unauthenticated)");
         ws.terminate();
         return;
       }
