@@ -6,6 +6,9 @@ import { plexFetch } from "./plex.js";
 import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped } from "../routes/plex.js";
 import { createTracker, handleTrackerSocket, destroyTracker } from "./tracker.js";
 
+/** Interval between WebSocket pings to detect dead connections. */
+const WS_PING_INTERVAL_MS = 30_000;
+
 /**
  * Stop a Plex transcode using the mapped Plex internal key.
  * Our session UUID differs from Plex's internal transcode key, so we use
@@ -143,6 +146,21 @@ export function attachWebSocketServer(server: Server): void {
   wss.on("connection", (ws) => {
     let client: RoomClient | null = null;
     let roomId: string | null = null;
+
+    let alive = true;
+
+    const pingTimer = setInterval(() => {
+      if (!alive) {
+        ws.terminate();
+        return;
+      }
+      alive = false;
+      ws.ping();
+    }, WS_PING_INTERVAL_MS);
+
+    ws.on("pong", () => {
+      alive = true;
+    });
 
     ws.on("message", (raw: RawData) => {
       let msg: Record<string, unknown>;
@@ -285,6 +303,7 @@ export function attachWebSocketServer(server: Server): void {
     });
 
     ws.on("close", () => {
+      clearInterval(pingTimer);
       if (!client || !roomId) return;
       const room = rooms.get(roomId);
       if (!room) return;
