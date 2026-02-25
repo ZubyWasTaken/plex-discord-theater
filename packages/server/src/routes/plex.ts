@@ -892,6 +892,7 @@ router.delete(
 
     // Clear cached manifest
     manifestCache.delete(sessionId);
+    const ratingKey = sessionRatingKeys.get(sessionId) || null;
     const plexKey = plexTranscodeKeys.get(sessionId);
 
     // Only send the stop to Plex if we still have a valid Plex transcode key.
@@ -901,6 +902,7 @@ router.delete(
       // Clear mapping and active set
       activeTranscodeKeys.delete(plexKey);
       plexTranscodeKeys.delete(sessionId);
+      sessionRatingKeys.delete(sessionId);
 
       try {
         const stopRes = await plexFetch(
@@ -919,8 +921,9 @@ router.delete(
         return;
       }
       // Notify Plex that playback stopped so it clears per-client state
-      notifyPlexStopped(null, sessionId).catch(() => {});
+      notifyPlexStopped(ratingKey, sessionId).catch(() => {});
     } else {
+      sessionRatingKeys.delete(sessionId);
       if (DEBUG) console.log("[HLS] Stop session", sessionId.substring(0, 8),
         "(already stopped via sync)");
     }
