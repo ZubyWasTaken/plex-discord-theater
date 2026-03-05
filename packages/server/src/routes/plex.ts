@@ -403,6 +403,7 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
       : await plexFetch(imagePath);
 
     if (!plexRes.ok) {
+      plexRes.body?.cancel().catch(() => {});
       res.status(plexRes.status).end();
       return;
     }
@@ -414,6 +415,7 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
 
     const contentLength = plexRes.headers.get("content-length");
     if (contentLength && parseInt(contentLength, 10) > 10 * 1024 * 1024) {
+      plexRes.body?.cancel().catch(() => {});
       res.status(502).end();
       return;
     }
@@ -652,6 +654,8 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
 /** Cache rewritten master manifests so viewers reusing a host's sessionId
  *  don't trigger a second Plex transcode request. */
 const manifestCache = new Map<string, { manifest: string; createdAt: number }>();
+/** Dedup concurrent manifest requests — prevents duplicate decision+start calls to Plex */
+const manifestInFlight = new Map<string, Promise<string>>();
 const MANIFEST_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 // Prune stale entries every 2 minutes
@@ -693,6 +697,21 @@ router.get(
       return;
     }
 
+    // Dedup concurrent manifest requests — if another request is already doing
+    // the decision+start round-trip for this session, wait for it instead of
+    // sending duplicate calls that race on Plex's per-client state
+    const inFlight = manifestInFlight.get(sessionId);
+    if (inFlight) {
+      try {
+        const manifest = await inFlight;
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        res.send(manifest);
+      } catch (err) {
+        res.status(502).json({ error: "Failed to start HLS session" });
+      }
+      return;
+    }
+
     // Optional offset (seconds) — used to resume from a position after audio/subtitle switch.
     // Round to integer — Plex can reject offsets with many decimal places.
     const offsetSec = Math.round(parseFloat(req.query.offset as string));
@@ -701,7 +720,9 @@ router.get(
     const subtitleMode = req.query.subtitles === "burn" ? "burn" : "none";
 
     console.log("[HLS] Master manifest requested for ratingKey:", ratingKey, "session:", sessionId.substring(0, 8), offset ? `offset:${offset}s` : "");
-    try {
+
+    // Core manifest fetch logic — wrapped in a promise for in-flight deduplication
+    const fetchManifest = async (): Promise<string> => {
       const params: Record<string, string> = {
         hasMDE: "1",
         path: `/library/metadata/${ratingKey}`,
@@ -797,8 +818,7 @@ router.get(
       if (!plexRes.ok) {
         const text = await plexRes.text();
         console.error("HLS start error:", plexRes.status, text.substring(0, 200));
-        res.status(plexRes.status).json({ error: "Failed to start transcode" });
-        return;
+        throw new Error(`Plex returned ${plexRes.status}`);
       }
 
       const m3u8 = await plexRes.text();
@@ -821,11 +841,22 @@ router.get(
       const rewritten = rewriteManifestUrls(m3u8, authToken);
       // Cache for viewer session sharing
       manifestCache.set(sessionId, { manifest: rewritten, createdAt: Date.now() });
+      return rewritten;
+    };
+
+    // Store promise in in-flight map so concurrent requests wait on it
+    const promise = fetchManifest();
+    manifestInFlight.set(sessionId, promise);
+
+    try {
+      const manifest = await promise;
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.send(rewritten);
+      res.send(manifest);
     } catch (err) {
       console.error("HLS start error:", err);
       res.status(502).json({ error: "Failed to start HLS session" });
+    } finally {
+      manifestInFlight.delete(sessionId);
     }
   },
 );
@@ -866,6 +897,9 @@ router.get("/hls/seg", async (req: Request, res: Response) => {
     const plexRes = await plexFetch(segPath);
 
     if (!plexRes.ok) {
+      // Drain the body so the underlying TCP connection is returned to the pool
+      plexRes.body?.cancel().catch(() => {});
+
       // If Plex returns 404 for a segment, the transcode was killed server-side
       // (ping timeout, resource pressure, etc.). Mark it dead so we stop proxying
       // and return 410 immediately for all subsequent requests to this session,

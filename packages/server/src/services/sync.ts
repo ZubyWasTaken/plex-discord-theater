@@ -208,7 +208,7 @@ export function attachWebSocketServer(server: Server): void {
 
         // Verify userId matches the authenticated Discord identity
         const verifiedUserId = getSessionUserId(token);
-        if (verifiedUserId && verifiedUserId !== userId) {
+        if (!verifiedUserId || verifiedUserId !== userId) {
           sendTo(ws, { type: "error", message: "userId mismatch" });
           ws.close(1008, "userId mismatch");
           return;

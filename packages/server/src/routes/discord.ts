@@ -130,7 +130,11 @@ router.post("/register", (req: Request, res: Response) => {
     return;
   }
   const verifiedUserId = getSessionUserId(token);
-  if (verifiedUserId && verifiedUserId !== userId) {
+  if (!verifiedUserId) {
+    res.status(403).json({ error: "Session has no verified identity" });
+    return;
+  }
+  if (verifiedUserId !== userId) {
     res.status(403).json({ error: "userId does not match authenticated identity" });
     return;
   }
