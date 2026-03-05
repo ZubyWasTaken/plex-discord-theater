@@ -11,13 +11,14 @@ export function getSessionToken(): string | null {
 const BASE = "";
 
 async function throwApiError(res: Response, path: string): Promise<never> {
+  let message: string | null = null;
   try {
     const body = await res.json();
-    if (body.error && typeof body.error === "string") throw new Error(body.error);
-  } catch (e) {
-    if (e instanceof Error && e.message !== `API error ${res.status}: ${path}`) throw e;
+    if (body?.error && typeof body.error === "string") message = body.error;
+  } catch {
+    // non-JSON body — use generic message
   }
-  throw new Error(`API error ${res.status}: ${path}`);
+  throw new Error(message ?? `API error ${res.status}: ${path}`);
 }
 
 function authHeaders(): Record<string, string> {
