@@ -38,6 +38,8 @@ const stmtSet = db.prepare(
 
 const stmtDeleteExpired = db.prepare("DELETE FROM thumbs WHERE cached_at < ?");
 
+const stmtDeleteOne = db.prepare("DELETE FROM thumbs WHERE path = ?");
+
 const stmtTotalSize = db.prepare<[], { total: number }>(
   "SELECT COALESCE(SUM(LENGTH(data)), 0) AS total FROM thumbs",
 );
@@ -57,7 +59,7 @@ export function get(thumbPath: string): CacheEntry | null {
 
   // Check TTL
   if (Date.now() - row.cached_at > TTL_MS) {
-    db.prepare("DELETE FROM thumbs WHERE path = ?").run(thumbPath);
+    stmtDeleteOne.run(thumbPath);
     return null;
   }
 
