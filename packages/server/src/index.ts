@@ -42,10 +42,13 @@ app.use(
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
         mediaSrc: ["'self'"],
         imgSrc: ["'self'"],
-        connectSrc: ["'self'", "https://discord.com", "https://*.discord.com", "wss://*.discord.gg", "wss:", "ws:"],
+        connectSrc: ["'self'", "https://discord.com", "https://*.discord.com", "https://*.discordsays.com", "wss://*.discord.gg", "wss://*.discordsays.com", "wss:", "ws:"],
+        // Discord embeds Activities in an iframe from *.discordsays.com —
+        // frame-ancestors must allow it or the browser blocks the embed
+        frameAncestors: ["'self'", "https://discord.com", "https://*.discord.com", "https://*.discordsays.com"],
       },
     },
-    frameguard: false, // Allow Discord iframe embedding
+    frameguard: false, // Allow Discord iframe embedding (X-Frame-Options superseded by frame-ancestors)
   }),
 );
 
