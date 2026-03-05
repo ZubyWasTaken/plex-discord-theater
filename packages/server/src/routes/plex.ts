@@ -962,11 +962,6 @@ router.delete(
     // If the mapping is gone, the WebSocket handler already stopped it — sending
     // a stop with our UUID creates ghost state in Plex that blocks new transcodes.
     if (plexKey) {
-      // Clear mapping and active set
-      activeTranscodeKeys.delete(plexKey);
-      plexTranscodeKeys.delete(sessionId);
-      sessionRatingKeys.delete(sessionId);
-
       try {
         const stopRes = await plexFetch(
           "/video/:/transcode/universal/stop",
@@ -982,9 +977,14 @@ router.delete(
         console.error("Stop session error:", err);
         res.status(502).json({ error: "Stop failed" });
         return;
+      } finally {
+        // Always clear mappings and notify Plex — even on error the transcode
+        // key should not be reused, and notifyPlexStopped prevents stale 400s
+        activeTranscodeKeys.delete(plexKey);
+        plexTranscodeKeys.delete(sessionId);
+        sessionRatingKeys.delete(sessionId);
+        notifyPlexStopped(ratingKey, sessionId).catch(() => {});
       }
-      // Notify Plex that playback stopped so it clears per-client state
-      notifyPlexStopped(ratingKey, sessionId).catch(() => {});
     } else {
       sessionRatingKeys.delete(sessionId);
       if (DEBUG) console.log("[HLS] Stop session", sessionId.substring(0, 8),
