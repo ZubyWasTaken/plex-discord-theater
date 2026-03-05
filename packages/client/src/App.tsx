@@ -65,11 +65,11 @@ export function App() {
 
   // Viewer: auto-navigate when host starts or stops playback
   useEffect(() => {
-    if (effectiveIsHost) return;
-
     const prevKey = prevRatingKeyRef.current;
     const newKey = syncState.ratingKey;
-    prevRatingKeyRef.current = newKey;
+    prevRatingKeyRef.current = newKey; // always update, even for host
+
+    if (effectiveIsHost) return;
 
     // Host started playing — push player onto stack
     if (newKey && newKey !== prevKey) {

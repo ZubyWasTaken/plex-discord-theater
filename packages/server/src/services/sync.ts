@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Server } from "http";
-import { isValidSession } from "../middleware/auth.js";
+import { isValidSession, getSessionUserId } from "../middleware/auth.js";
 import { instanceHosts } from "../routes/discord.js";
 import { plexFetch } from "./plex.js";
 import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped } from "../routes/plex.js";
@@ -203,6 +203,14 @@ export function attachWebSocketServer(server: Server): void {
         if (!isValidSession(token)) {
           sendTo(ws, { type: "error", message: "Invalid session" });
           ws.close(1008, "Invalid session");
+          return;
+        }
+
+        // Verify userId matches the authenticated Discord identity
+        const verifiedUserId = getSessionUserId(token);
+        if (verifiedUserId && verifiedUserId !== userId) {
+          sendTo(ws, { type: "error", message: "userId mismatch" });
+          ws.close(1008, "userId mismatch");
           return;
         }
 

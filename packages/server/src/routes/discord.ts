@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { createSession } from "../middleware/auth.js";
+import { createSession, isValidSession, getSessionUserId } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -78,7 +78,22 @@ router.post("/token", async (req: Request, res: Response) => {
       res.status(502).json({ error: "Invalid response from Discord" });
       return;
     }
-    const sessionToken = createSession();
+
+    // Fetch verified Discord userId to bind to the session
+    let discordUserId: string | undefined;
+    try {
+      const meRes = await fetch("https://discord.com/api/users/@me", {
+        headers: { Authorization: `Bearer ${data.access_token}` },
+      });
+      if (meRes.ok) {
+        const me = (await meRes.json()) as { id?: string };
+        discordUserId = me.id;
+      }
+    } catch {
+      // Non-fatal — session will work but userId won't be verified
+    }
+
+    const sessionToken = createSession(discordUserId);
     res.json({ access_token: data.access_token, session_token: sessionToken });
   } catch (err) {
     console.error("Token exchange error:", err);
@@ -104,6 +119,19 @@ router.post("/register", (req: Request, res: Response) => {
 
   if (instanceId.length > 200 || userId.length > 200 || guildId.length > 200) {
     res.status(400).json({ error: "Parameters too long" });
+    return;
+  }
+
+  // Verify session token and that the claimed userId matches the authenticated identity
+  const header = req.headers.authorization;
+  const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
+  if (!token || !isValidSession(token)) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+  const verifiedUserId = getSessionUserId(token);
+  if (verifiedUserId && verifiedUserId !== userId) {
+    res.status(403).json({ error: "userId does not match authenticated identity" });
     return;
   }
 

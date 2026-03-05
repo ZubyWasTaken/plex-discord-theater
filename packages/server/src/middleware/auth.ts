@@ -6,6 +6,7 @@ const MAX_SESSIONS = 10_000;
 
 interface Session {
   createdAt: number;
+  userId: string | null;
 }
 
 const sessions = new Map<string, Session>();
@@ -20,7 +21,7 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
-export function createSession(): string {
+export function createSession(userId?: string): string {
   if (sessions.size >= MAX_SESSIONS) {
     const oldest = [...sessions.entries()]
       .sort((a, b) => a[1].createdAt - b[1].createdAt)
@@ -28,8 +29,19 @@ export function createSession(): string {
     for (const [token] of oldest) sessions.delete(token);
   }
   const token = crypto.randomUUID();
-  sessions.set(token, { createdAt: Date.now() });
+  sessions.set(token, { createdAt: Date.now(), userId: userId ?? null });
   return token;
+}
+
+/** Return the verified Discord userId bound to this session, or null if not set. */
+export function getSessionUserId(token: string): string | null {
+  const session = sessions.get(token);
+  if (!session) return null;
+  if (Date.now() - session.createdAt > SESSION_TTL_MS) {
+    sessions.delete(token);
+    return null;
+  }
+  return session.userId;
 }
 
 export function isValidSession(token: string): boolean {
