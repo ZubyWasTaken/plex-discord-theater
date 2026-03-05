@@ -129,6 +129,11 @@ export function attachWebSocketServer(server: Server): void {
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
     if (url.pathname === "/tracker") {
+      const token = url.searchParams.get("token");
+      if (!token || !isValidSession(token)) {
+        socket.destroy();
+        return;
+      }
       trackerWss.handleUpgrade(req, socket, head, (ws) => {
         trackerWss.emit("connection", ws, req);
       });
@@ -287,10 +292,14 @@ export function attachWebSocketServer(server: Server): void {
           broadcast(room, ws, { type: "stop" });
           // Kill the Plex transcode server-side so it dies even if viewers
           // are still fetching segments (their hls.js takes a moment to tear down)
-          killPlexTranscode(stoppingSessionId).catch(() => {});
+          if (stoppingSessionId) {
+            markTranscodeStopped(stoppingSessionId);
+            killPlexTranscode(stoppingSessionId).catch(() => {});
+          }
           break;
         }
         case "heartbeat": {
+          if (!room.state.ratingKey) break;
           room.state.position = (msg.position as number) ?? room.state.position;
           room.state.playing = msg.playing !== false;
           room.state.updatedAt = Date.now();
@@ -314,16 +323,9 @@ export function attachWebSocketServer(server: Server): void {
 
       if (client.isHost) {
         if (room.clients.size > 0) {
-          // Notify viewers that the host disconnected before promoting a new one
-          for (const c of room.clients) {
-            sendTo(c.ws, { type: "host-disconnected" });
-          }
-
-          // Promote the first remaining client to host
           const newHost = room.clients.values().next().value!;
           newHost.isHost = true;
 
-          // Update the instance host mapping so future joins see the new host
           const instance = instanceHosts.get(roomId);
           if (instance) {
             instance.hostUserId = newHost.userId;
@@ -331,17 +333,15 @@ export function attachWebSocketServer(server: Server): void {
 
           console.log("[Sync] Host left, promoting", newHost.userId.substring(0, 8), "to host");
 
-          // Notify the promoted client
           sendTo(newHost.ws, { type: "host-promoted" });
-          // Notify all other clients that the host changed
+
           for (const c of room.clients) {
             if (c !== newHost) {
+              sendTo(c.ws, { type: "host-disconnected" });
               sendTo(c.ws, { type: "host-changed" });
             }
           }
-          // Do NOT kill the Plex transcode — new host inherits active session
         } else {
-          // No clients remain — kill the transcode and clean up
           const disconnectedSessionId = room.state.hlsSessionId;
           room.state.playing = false;
           room.state.hlsSessionId = null;
