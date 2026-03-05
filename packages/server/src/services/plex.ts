@@ -22,16 +22,25 @@ export function plexUrl(path: string, params?: Record<string, string>): string {
   return url.toString();
 }
 
+const PLEX_TIMEOUT_MS = 15_000;
+
 export async function plexFetch(
   path: string,
   params?: Record<string, string>,
   extraHeaders?: Record<string, string>,
   method?: string,
 ): Promise<Response> {
-  return fetch(plexUrl(path, params), {
-    method,
-    headers: extraHeaders ? { ...PLEX_HEADERS, ...extraHeaders } : PLEX_HEADERS,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PLEX_TIMEOUT_MS);
+  try {
+    return await fetch(plexUrl(path, params), {
+      method,
+      headers: extraHeaders ? { ...PLEX_HEADERS, ...extraHeaders } : PLEX_HEADERS,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function plexJSON<T = unknown>(
