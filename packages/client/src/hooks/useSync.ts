@@ -52,7 +52,6 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef = useRef(true);
 
   const send = useCallback((msg: object) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -75,7 +74,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
   );
 
   useEffect(() => {
-    mountedRef.current = true;
+    let active = true;
 
     if (!enabled || !instanceId || !userId) return;
 
@@ -88,7 +87,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
       wsRef.current = ws;
 
       ws.addEventListener("open", () => {
-        if (!mountedRef.current) return;
+        if (!active) return;
         retryRef.current = 0;
         ws.send(
           JSON.stringify({
@@ -102,7 +101,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
       });
 
       ws.addEventListener("message", (event) => {
-        if (!mountedRef.current) return;
+        if (!active) return;
         let msg: Record<string, unknown>;
         try {
           msg = JSON.parse(event.data as string);
@@ -194,7 +193,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
       });
 
       ws.addEventListener("close", () => {
-        if (!mountedRef.current) return;
+        if (!active) return;
         wsRef.current = null;
         setState((prev) => ({ ...prev, connected: false }));
 
@@ -212,7 +211,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
     connect();
 
     return () => {
-      mountedRef.current = false;
+      active = false;
       if (retryTimerRef.current) {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;

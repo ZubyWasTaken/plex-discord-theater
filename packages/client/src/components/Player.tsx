@@ -144,7 +144,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
               swarmId: `pdt-${sessionId}`,
               // Use self-hosted tracker on same origin to bypass Discord CSP
               announceTrackers: [
-                `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/tracker`,
+                `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/tracker${token ? `?token=${encodeURIComponent(token)}` : ""}`,
               ],
               // Reduce "must fetch via HTTP" window so P2P has a chance to supply
               // more segments before the HTTP downloader grabs them

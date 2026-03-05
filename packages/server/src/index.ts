@@ -37,6 +37,7 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
         mediaSrc: ["'self'"],
@@ -117,8 +118,10 @@ const server = app.listen(PORT, () => {
 
 attachWebSocketServer(server);
 
-function shutdown(signal: string) {
+async function shutdown(signal: string) {
   console.log(`${signal} received, shutting down gracefully`);
+  const { stopAllActiveSessions } = await import("./routes/plex.js");
+  await stopAllActiveSessions();
   server.close(() => {
     closeWebSocketServer();
     thumbCache.close();

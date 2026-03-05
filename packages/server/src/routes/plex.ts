@@ -1140,4 +1140,23 @@ async function pipeBody(
   }
 }
 
+/** Stop transcode sessions started by this server instance during graceful shutdown.
+ *  Only affects sessions in our plexTranscodeKeys map; other Plex clients are untouched. */
+export async function stopAllActiveSessions(): Promise<void> {
+  const entries = [...plexTranscodeKeys.entries()];
+  for (const [sessionId, plexKey] of entries) {
+    const ratingKey = sessionRatingKeys.get(sessionId) || null;
+    try {
+      await plexFetch(
+        "/video/:/transcode/universal/stop",
+        { session: plexKey },
+        { "X-Plex-Client-Identifier": OUR_CLIENT_ID },
+      );
+      console.log("[Shutdown] Stopped transcode:", plexKey.substring(0, 8));
+    } catch {}
+    markTranscodeStopped(sessionId);
+    await notifyPlexStopped(ratingKey, sessionId).catch(() => {});
+  }
+}
+
 export default router;

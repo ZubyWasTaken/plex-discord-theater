@@ -32,12 +32,13 @@ export function App() {
   const [promotedToast, setPromotedToast] = useState(false);
   const prevSyncIsHost = useRef(syncState.isHost);
   useEffect(() => {
-    if (syncState.isHost === true && prevSyncIsHost.current !== true) {
+    const prev = prevSyncIsHost.current;
+    prevSyncIsHost.current = syncState.isHost;
+    if (syncState.isHost === true && prev !== true) {
       setPromotedToast(true);
       const timer = setTimeout(() => setPromotedToast(false), 2000);
       return () => clearTimeout(timer);
     }
-    prevSyncIsHost.current = syncState.isHost;
   }, [syncState.isHost]);
 
   // Persist active library section across navigation
@@ -82,7 +83,10 @@ export function App() {
         },
         subtitles: syncState.subtitles,
       };
-      setViewStack((s) => [...s, playerView]);
+      setViewStack((s) => {
+        const base = s[s.length - 1]?.kind === "player" ? s.slice(0, -1) : s;
+        return [...base, playerView];
+      });
     }
 
     // Host stopped — pop back from player if we're on one
