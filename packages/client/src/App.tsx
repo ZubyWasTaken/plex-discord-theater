@@ -97,7 +97,8 @@ export function App() {
         return s;
       });
     }
-  }, [effectiveIsHost, syncState.ratingKey, syncState.title, syncState.subtitles]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveIsHost, syncState.ratingKey]);
 
   const handleRejoin = useCallback(() => {
     if (!syncState.ratingKey) return;

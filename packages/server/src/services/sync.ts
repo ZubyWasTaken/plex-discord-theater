@@ -72,6 +72,7 @@ interface Room {
 
 const rooms = new Map<string, Room>();
 let wss: WebSocketServer | null = null;
+let trackerWss: WebSocketServer | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 function getOrCreateRoom(instanceId: string): Room {
@@ -119,7 +120,7 @@ export function attachWebSocketServer(server: Server): void {
   wss = new WebSocketServer({ noServer: true });
 
   // Dedicated WSS for the P2P tracker — keeps tracker traffic isolated
-  const trackerWss = new WebSocketServer({ noServer: true });
+  trackerWss = new WebSocketServer({ noServer: true });
   createTracker();
 
   trackerWss.on("connection", (ws) => {
@@ -134,12 +135,20 @@ export function attachWebSocketServer(server: Server): void {
         socket.destroy();
         return;
       }
-      trackerWss.handleUpgrade(req, socket, head, (ws) => {
-        trackerWss.emit("connection", ws, req);
+      trackerWss!.handleUpgrade(req, socket, head, (ws) => {
+        trackerWss!.emit("connection", ws, req);
       });
       return;
     }
     if (url.pathname !== "/ws") {
+      socket.destroy();
+      return;
+    }
+    // Validate session token at upgrade time (mirrors /tracker auth).
+    // The join message also validates, but rejecting early avoids allocating
+    // a WebSocket for unauthenticated connections.
+    const wsToken = url.searchParams.get("token");
+    if (!wsToken || !isValidSession(wsToken)) {
       socket.destroy();
       return;
     }
@@ -211,6 +220,7 @@ export function attachWebSocketServer(server: Server): void {
         // before Node processed the close event for the old socket)
         for (const existing of room.clients) {
           if (existing.userId === userId) {
+            existing.isHost = false; // prevent close handler from triggering host-left logic
             room.clients.delete(existing);
             existing.ws.close(1000, "Replaced by new connection");
             break;
@@ -303,7 +313,6 @@ export function attachWebSocketServer(server: Server): void {
           // Kill the Plex transcode server-side so it dies even if viewers
           // are still fetching segments (their hls.js takes a moment to tear down)
           if (stoppingSessionId) {
-            markTranscodeStopped(stoppingSessionId);
             killPlexTranscode(stoppingSessionId).catch(() => {});
           }
           break;
@@ -387,6 +396,13 @@ export function closeWebSocketServer(): void {
     }
     wss.close();
     wss = null;
+  }
+  if (trackerWss) {
+    for (const client of trackerWss.clients) {
+      client.close(1001, "Server shutting down");
+    }
+    trackerWss.close();
+    trackerWss = null;
   }
   destroyTracker();
   rooms.clear();

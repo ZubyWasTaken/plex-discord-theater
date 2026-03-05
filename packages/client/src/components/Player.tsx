@@ -11,6 +11,7 @@ const HEARTBEAT_INTERVAL_MS = 5_000;
 const DRIFT_THRESHOLD_S = 2;
 const HEARTBEAT_DRIFT_THRESHOLD_S = 5;
 const MAX_VIEWER_RETRIES = 3;
+const MAX_NETWORK_RETRIES = 5;
 
 interface PlayerProps {
   item: PlexItem;
@@ -31,11 +32,14 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const [retryKey, setRetryKey] = useState(0);
   const retryCountRef = useRef(0);
   const hlsDeadRef = useRef(false);
+  const networkRetryRef = useRef(0);
   const pendingStopRef = useRef<Promise<void> | null>(null);
 
-  // Stable ref for syncActions so the HLS effect doesn't re-run when actions change
+  // Stable refs so the HLS effect doesn't re-run when these change
   const syncActionsRef = useRef(syncActions);
   syncActionsRef.current = syncActions;
+  const syncStateRef = useRef(syncState);
+  syncStateRef.current = syncState;
 
   // Refs for isHost/ownsSession so the main HLS effect doesn't re-run on promotion.
   // The promoted host should keep the existing HLS stream, not tear it down.
@@ -184,7 +188,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           // Viewer joining mid-playback: seek to host's position immediately
           // instead of waiting for the 5s heartbeat drift threshold
           if (!isHostRef.current && syncActionsRef.current) {
-            const syncPos = syncState?.position;
+            const syncPos = syncStateRef.current?.position;
             if (syncPos && syncPos > DRIFT_THRESHOLD_S) {
               video.currentTime = syncPos;
             }
@@ -203,6 +207,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           if (mounted) {
             setError(null);
             retryCountRef.current = 0;
+            networkRetryRef.current = 0;
             hlsDeadRef.current = false;
           }
         });
@@ -211,7 +216,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           if (data.fatal) {
             console.error("HLS fatal error:", data);
             if (mounted) setError(`Playback error: ${data.type}`);
-            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetryRef.current < MAX_NETWORK_RETRIES) {
+              networkRetryRef.current++;
               hls.startLoad();
             } else if (!ownsSessionRef.current && retryCountRef.current < MAX_VIEWER_RETRIES) {
               // Viewer: retry by bumping retryKey after a delay (re-runs the effect)
@@ -262,8 +268,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         }, PING_INTERVAL_MS);
       }
 
-      // Host: heartbeat every 5s
-      if (isHostRef.current) {
+      // Host: heartbeat every 5s (guard against double-start if promotion effect already set one)
+      if (isHostRef.current && heartbeatIntervalRef.current === null) {
         heartbeatIntervalRef.current = setInterval(() => {
           const v = videoRef.current;
           if (v && v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {

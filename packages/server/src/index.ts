@@ -122,11 +122,18 @@ async function shutdown(signal: string) {
   console.log(`${signal} received, shutting down gracefully`);
   const { stopAllActiveSessions } = await import("./routes/plex.js");
   await stopAllActiveSessions();
+  // Close WebSocket connections first — server.close() won't complete while
+  // WS connections are alive (they hold the underlying HTTP upgrade sockets open)
+  closeWebSocketServer();
   server.close(() => {
-    closeWebSocketServer();
     thumbCache.close();
     process.exit(0);
   });
+  // Fallback: force exit if server.close() hangs (e.g. lingering keep-alive connections)
+  setTimeout(() => {
+    console.warn("Shutdown timeout — forcing exit");
+    process.exit(1);
+  }, 5000).unref();
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));

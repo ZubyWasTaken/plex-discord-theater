@@ -83,7 +83,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
       if (!token) return;
 
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${protocol}//${location.host}/ws`);
+      const ws = new WebSocket(`${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`);
       wsRef.current = ws;
 
       ws.addEventListener("open", () => {
@@ -187,7 +187,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
             setState((prev) => ({ ...prev, isHost: true, hostDisconnected: false }));
             break;
           case "host-changed":
-            setState((prev) => ({ ...prev, hostDisconnected: false }));
+            setState((prev) => ({ ...prev, isHost: false, hostDisconnected: false }));
             break;
         }
       });

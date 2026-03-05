@@ -420,6 +420,10 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
 
     // Buffer the response so we can cache it
     const data = Buffer.from(await plexRes.arrayBuffer());
+    if (data.length > 10 * 1024 * 1024) {
+      res.status(502).end();
+      return;
+    }
 
     // Store in cache (fire-and-forget, don't block response)
     try {
@@ -1010,6 +1014,7 @@ router.delete("/hls/sessions", async (req: Request, res: Response) => {
         Metadata?: Array<{
           Session?: { id?: string };
           TranscodeSession?: { key?: string };
+          Player?: { machineIdentifier?: string };
         }>;
       };
     }>("/status/sessions");
@@ -1019,12 +1024,15 @@ router.delete("/hls/sessions", async (req: Request, res: Response) => {
 
     let stopped = 0;
     for (const s of sessions) {
+      // Only kill sessions started by our app (skip other Plex clients)
+      if (!s.Player?.machineIdentifier?.startsWith("plex-discord-theater")) continue;
+
       const key = s.TranscodeSession?.key;
       if (key) {
         try {
           const stopRes = await plexFetch(`/video/:/transcode/universal/stop`, { session: key }, {
             "X-Plex-Session-Identifier": key,
-            "X-Plex-Client-Identifier": "plex-discord-theater",
+            "X-Plex-Client-Identifier": OUR_CLIENT_ID,
           });
           if (DEBUG) console.log("[HLS] Killed session", key, "→", stopRes.status);
           stopped++;
@@ -1144,12 +1152,16 @@ async function pipeBody(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (res.writableEnded) break;
+      if (res.writableEnded) {
+        await reader.cancel();
+        break;
+      }
       res.write(value);
     }
     if (!res.writableEnded) res.end();
   } catch (err) {
     console.error("Stream pipe error:", err);
+    await reader.cancel().catch(() => {});
     if (!res.writableEnded) res.end();
   }
 }
