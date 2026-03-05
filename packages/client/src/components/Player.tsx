@@ -12,9 +12,6 @@ const DRIFT_THRESHOLD_S = 2;
 const HEARTBEAT_DRIFT_THRESHOLD_S = 5;
 const MAX_VIEWER_RETRIES = 3;
 
-// Module-scoped so the pending stop survives across Player mount/unmount cycles
-let pendingStop: Promise<void> | null = null;
-
 interface PlayerProps {
   item: PlexItem;
   isHost: boolean;
@@ -33,6 +30,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const retryCountRef = useRef(0);
+  const pendingStopRef = useRef<Promise<void> | null>(null);
 
   // Stable ref for syncActions so the HLS effect doesn't re-run when actions change
   const syncActionsRef = useRef(syncActions);
@@ -62,7 +60,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     ownsSessionRef.current = true;
 
     // Start pinging to keep transcode alive (the old host was doing this)
-    if (pingIntervalRef.current === null && sessionIdRef.current) {
+    if (pingIntervalRef.current === null) {
       pingIntervalRef.current = setInterval(() => {
         if (sessionIdRef.current) {
           pingSession(sessionIdRef.current).catch(console.error);
@@ -118,9 +116,9 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     const url = hlsMasterUrl(item.ratingKey, sessionId, { subtitles });
 
     async function start() {
-      if (pendingStop) {
-        try { await pendingStop; } catch {}
-        pendingStop = null;
+      if (pendingStopRef.current) {
+        try { await pendingStopRef.current; } catch {}
+        pendingStopRef.current = null;
         // Give Plex time to fully release transcode resources
         await new Promise(r => setTimeout(r, 500));
       }
@@ -213,7 +211,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
             } else {
               destroyLocal();
               if (ownsSessionRef.current && sessionIdRef.current) {
-                pendingStop = stopSession(sessionIdRef.current).catch(() => {});
+                pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
                 sessionIdRef.current = null;
               }
             }
@@ -228,6 +226,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         const nativeUrl = token ? `${url}${sep}token=${encodeURIComponent(token)}` : url;
         video.src = nativeUrl;
         const onLoaded = () => {
+          if (!mounted) return;
           video.play().catch((err) => console.warn("Autoplay prevented:", err));
           if (isHostRef.current) {
             syncActionsRef.current?.sendPlay(item.ratingKey, item.title, subtitles, sessionId!);
@@ -266,7 +265,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
       destroyLocal();
       // Only the session owner stops the Plex transcode
       if (ownsSessionRef.current && sessionIdRef.current) {
-        pendingStop = stopSession(sessionIdRef.current).catch(() => {});
+        pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
         sessionIdRef.current = null;
       }
     };
@@ -316,7 +315,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     destroyLocal();
     // Only the session owner stops the Plex transcode
     if (ownsSessionRef.current && sessionIdRef.current) {
-      pendingStop = stopSession(sessionIdRef.current).catch(() => {});
+      pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
       sessionIdRef.current = null;
     }
     if (isHostRef.current) {
