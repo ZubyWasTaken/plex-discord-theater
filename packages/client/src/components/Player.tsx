@@ -30,6 +30,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const retryCountRef = useRef(0);
+  const hlsDeadRef = useRef(false);
   const pendingStopRef = useRef<Promise<void> | null>(null);
 
   // Stable ref for syncActions so the HLS effect doesn't re-run when actions change
@@ -179,6 +180,16 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           if (!mounted) return;
+
+          // Viewer joining mid-playback: seek to host's position immediately
+          // instead of waiting for the 5s heartbeat drift threshold
+          if (!isHostRef.current && syncActionsRef.current) {
+            const syncPos = syncState?.position;
+            if (syncPos && syncPos > DRIFT_THRESHOLD_S) {
+              video.currentTime = syncPos;
+            }
+          }
+
           video.play().catch((err) => console.warn("Autoplay prevented:", err));
 
           // Host: broadcast play with sessionId when manifest is ready
@@ -192,6 +203,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           if (mounted) {
             setError(null);
             retryCountRef.current = 0;
+            hlsDeadRef.current = false;
           }
         });
 
@@ -213,6 +225,9 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
               if (ownsSessionRef.current && sessionIdRef.current) {
                 pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
                 sessionIdRef.current = null;
+              }
+              if (!ownsSessionRef.current) {
+                hlsDeadRef.current = true;
               }
             }
           }
@@ -276,6 +291,16 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   // so they naturally stay in sync without constant seeking.
   useEffect(() => {
     if (isHostRef.current || !syncState || syncState.commandSeq === 0) return;
+
+    // Viewer recovery: if HLS died after exhausting retries, a new host command
+    // means the stream may be alive again — reset and retry
+    if (hlsDeadRef.current) {
+      hlsDeadRef.current = false;
+      retryCountRef.current = 0;
+      setRetryKey((k) => k + 1);
+      return;
+    }
+
     const video = videoRef.current;
     if (!video) return;
 

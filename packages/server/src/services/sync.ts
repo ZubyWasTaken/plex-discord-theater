@@ -207,6 +207,16 @@ export function attachWebSocketServer(server: Server): void {
         const isHost = instance.hostUserId === userId;
         const room = getOrCreateRoom(instanceId);
 
+        // Evict stale connection from the same user (e.g. browser reconnected
+        // before Node processed the close event for the old socket)
+        for (const existing of room.clients) {
+          if (existing.userId === userId) {
+            room.clients.delete(existing);
+            existing.ws.close(1000, "Replaced by new connection");
+            break;
+          }
+        }
+
         client = { ws, userId, isHost };
         roomId = instanceId;
         room.clients.add(client);

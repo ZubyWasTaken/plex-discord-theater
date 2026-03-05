@@ -277,6 +277,11 @@ router.get("/meta/:ratingKey", async (req: Request, res: Response) => {
         selected: !!s.selected,
       }));
 
+    // Cache duration for timeline stopped notifications
+    if (m.duration && m.ratingKey) {
+      mediaDurations.set(m.ratingKey, m.duration);
+    }
+
     res.json({
       ratingKey: m.ratingKey,
       title: m.title,
@@ -445,6 +450,8 @@ const OUR_CLIENT_ID = "plex-discord-theater";
 const plexTranscodeKeys = new Map<string, string>();
 /** Maps our session UUID → the ratingKey being played (needed for timeline stopped). */
 const sessionRatingKeys = new Map<string, string>();
+/** Maps ratingKey → duration in ms (cached from metadata endpoint for timeline stopped). */
+const mediaDurations = new Map<string, number>();
 const PLEX_SESSION_KEY_RE = /session\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
 
 /** Look up the Plex internal transcode key for one of our session UUIDs. */
@@ -470,14 +477,20 @@ export function getSessionClientId(_sessionId: string): string {
 const activeTranscodeKeys = new Set<string>();
 
 /**
- * Every Plex transcode key allocated during this server's lifetime.
- * Unlike activeTranscodeKeys (which is cleared on stop), this persists so
- * flushStaleTranscodes can identify orphaned transcodes that belong to us
- * without accidentally killing other Plex clients' HLS sessions.
- * Grows monotonically but each entry is a 36-char UUID (~72 bytes).
- * At 10,000 sessions this is < 1 MB — acceptable for a single-instance lifetime.
+ * Every Plex transcode key allocated during this server instance's lifetime,
+ * mapped to the timestamp when the key was first seen. Used by flushStaleTranscodes
+ * to identify orphaned transcodes that belong to us. Entries older than 24h are
+ * pruned periodically to prevent unbounded growth on long-running servers.
  */
-const allKnownPlexKeys = new Set<string>();
+const allKnownPlexKeys = new Map<string, number>();
+const KNOWN_KEY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+setInterval(() => {
+  const cutoff = Date.now() - KNOWN_KEY_TTL_MS;
+  for (const [key, ts] of allKnownPlexKeys) {
+    if (ts < cutoff) allKnownPlexKeys.delete(key);
+  }
+}, 60 * 60 * 1000).unref(); // prune every hour
 
 /** Mark a Plex transcode key as stopped — segment requests will be rejected. */
 export function markTranscodeStopped(sessionId: string): void {
@@ -496,6 +509,7 @@ export function markTranscodeStopped(sessionId: string): void {
 export async function notifyPlexStopped(ratingKey: string | null, sessionId: string): Promise<void> {
   // Use the tracked ratingKey if caller doesn't provide one
   const effectiveRatingKey = ratingKey || sessionRatingKeys.get(sessionId) || "0";
+  const duration = mediaDurations.get(effectiveRatingKey);
   try {
     const res = await plexFetch(
       "/:/timeline",
@@ -504,7 +518,7 @@ export async function notifyPlexStopped(ratingKey: string | null, sessionId: str
         key: `/library/metadata/${effectiveRatingKey}`,
         state: "stopped",
         time: "0",
-        duration: "0",
+        duration: duration ? String(duration) : "0",
         identifier: "com.plexapp.plugins.library",
       },
       {
@@ -792,7 +806,7 @@ router.get(
         plexTranscodeKeys.set(sessionId, plexKeyMatch[1]);
         sessionRatingKeys.set(sessionId, ratingKey);
         activeTranscodeKeys.add(plexKeyMatch[1]);
-        allKnownPlexKeys.add(plexKeyMatch[1]);
+        allKnownPlexKeys.set(plexKeyMatch[1], Date.now());
         console.log("[HLS] Plex transcode key:", plexKeyMatch[1].substring(0, 8), "for session:", sessionId.substring(0, 8));
       } else {
         console.warn("[HLS] Could not extract Plex transcode key from manifest for session:",
