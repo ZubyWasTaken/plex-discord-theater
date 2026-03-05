@@ -365,13 +365,15 @@ router.put("/streams/:partId", async (req: Request, res: Response) => {
  */
 router.get("/thumb/*", async (req: Request, res: Response) => {
   const imagePath = "/" + (req.params[0] as string);
-  if (imagePath.length > MAX_PROXY_PATH_LENGTH || !isAllowedProxyPath(imagePath)) {
+  if (imagePath.length > MAX_PROXY_PATH_LENGTH || !isAllowedThumbPath(imagePath)) {
     res.status(400).end();
     return;
   }
 
   const w = req.query.w as string | undefined;
   const h = req.query.h as string | undefined;
+  if (w && !NUMERIC_RE.test(w)) { res.status(400).end(); return; }
+  if (h && !NUMERIC_RE.test(h)) { res.status(400).end(); return; }
   const cacheKey = w && h ? `${imagePath}:${w}x${h}` : imagePath;
 
   // Check server-side cache first
@@ -404,6 +406,12 @@ router.get("/thumb/*", async (req: Request, res: Response) => {
       contentType && ALLOWED_IMAGE_TYPES.has(contentType.split(";")[0])
         ? contentType
         : "application/octet-stream";
+
+    const contentLength = plexRes.headers.get("content-length");
+    if (contentLength && parseInt(contentLength, 10) > 10 * 1024 * 1024) {
+      res.status(502).end();
+      return;
+    }
 
     // Buffer the response so we can cache it
     const data = Buffer.from(await plexRes.arrayBuffer());
@@ -477,6 +485,7 @@ export function markTranscodeStopped(sessionId: string): void {
   if (plexKey) activeTranscodeKeys.delete(plexKey);
   plexTranscodeKeys.delete(sessionId);
   sessionRatingKeys.delete(sessionId);
+  manifestCache.delete(sessionId);
 }
 
 /**
@@ -723,6 +732,10 @@ router.get(
         } catch {
           console.log("[HLS] Decision:", decisionRes.status, "(no body)");
         }
+        if (!decisionRes.ok) {
+          console.error("[HLS] Decision returned non-OK status:", decisionRes.status,
+            "— transcode start may fail");
+        }
       } catch (err) {
         console.log("[HLS] Decision failed (non-fatal):", err);
       }
@@ -781,6 +794,9 @@ router.get(
         activeTranscodeKeys.add(plexKeyMatch[1]);
         allKnownPlexKeys.add(plexKeyMatch[1]);
         console.log("[HLS] Plex transcode key:", plexKeyMatch[1].substring(0, 8), "for session:", sessionId.substring(0, 8));
+      } else {
+        console.warn("[HLS] Could not extract Plex transcode key from manifest for session:",
+          sessionId.substring(0, 8), "— stop/segment-blocking will not work for this session");
       }
 
       const authToken = req.query.token as string | undefined;
@@ -811,21 +827,22 @@ router.get("/hls/seg", async (req: Request, res: Response) => {
   }
   const segPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
 
-  // Block segment requests for stopped transcode sessions.
-  // After the host stops, the viewer's hls.js keeps fetching for a moment —
-  // those requests hitting Plex create phantom state that blocks new transcodes.
-  const segKeyMatch = segPath.match(PLEX_SESSION_KEY_RE);
-  if (segKeyMatch && activeTranscodeKeys.size > 0 && !activeTranscodeKeys.has(segKeyMatch[1])) {
-    res.status(410).end(); // Gone — transcode was stopped
-    return;
-  }
-
-  if (DEBUG) console.log("[HLS seg] Fetching:", segPath.substring(0, 120));
   if (segPath.length > MAX_PROXY_PATH_LENGTH || !isAllowedProxyPath(segPath)) {
     if (DEBUG) console.log("[HLS seg] Path rejected by validation");
     res.status(400).end();
     return;
   }
+
+  // Block segment requests for stopped transcode sessions.
+  // After the host stops, the viewer's hls.js keeps fetching for a moment —
+  // those requests hitting Plex create phantom state that blocks new transcodes.
+  const segKeyMatch = segPath.match(PLEX_SESSION_KEY_RE);
+  if (segKeyMatch && allKnownPlexKeys.has(segKeyMatch[1]) && !activeTranscodeKeys.has(segKeyMatch[1])) {
+    res.status(410).end(); // Gone — transcode was stopped
+    return;
+  }
+
+  if (DEBUG) console.log("[HLS seg] Fetching:", segPath.substring(0, 120));
 
   try {
     const plexRes = await plexFetch(segPath);
@@ -889,11 +906,12 @@ router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
   }
 
   try {
+    const plexKey = plexTranscodeKeys.get(sessionId) ?? sessionId;
     await plexFetch(
       "/video/:/transcode/universal/ping",
-      { session: sessionId },
+      { session: plexKey },
       {
-        "X-Plex-Session-Identifier": sessionId,
+        "X-Plex-Session-Identifier": plexKey,
         "X-Plex-Client-Identifier": getSessionClientId(sessionId),
       },
     );
@@ -990,7 +1008,7 @@ router.delete("/hls/sessions", async (req: Request, res: Response) => {
       const key = s.TranscodeSession?.key;
       if (key) {
         try {
-          const stopRes = await plexFetch(`/video/:/transcode/universal/stop`, undefined, {
+          const stopRes = await plexFetch(`/video/:/transcode/universal/stop`, { session: key }, {
             "X-Plex-Session-Identifier": key,
             "X-Plex-Client-Identifier": "plex-discord-theater",
           });
@@ -1045,6 +1063,12 @@ function isAllowedProxyPath(p: string): boolean {
     !decoded.includes("\0") &&
     !decoded.includes("\\")
   );
+}
+
+const ALLOWED_THUMB_PREFIXES = ["/library/", "/photo/"];
+
+function isAllowedThumbPath(p: string): boolean {
+  return isAllowedProxyPath(p) && ALLOWED_THUMB_PREFIXES.some(prefix => p.startsWith(prefix));
 }
 
 /**
