@@ -83,6 +83,7 @@ const hlsLimiter = rateLimit({
   max: isDev ? 50000 : 3000,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
 });
 
 app.use("/api/token", authLimiter);
@@ -136,7 +137,7 @@ async function shutdown(signal: string) {
   setTimeout(() => {
     console.warn("Shutdown timeout — forcing exit");
     process.exit(1);
-  }, 5000).unref();
+  }, 15000).unref();
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
