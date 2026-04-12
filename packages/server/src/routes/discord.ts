@@ -1,5 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { createSession, isValidSession, getSessionUserId } from "../middleware/auth.js";
+import Database from "better-sqlite3";
+import path from "node:path";
+import fs from "node:fs";
 
 const router = Router();
 
@@ -14,11 +17,61 @@ export const instanceHosts = new Map<string, { hostUserId: string; guildId: stri
 /** Maps guildId → active instanceId (one activity per server) */
 const guildInstances = new Map<string, string>();
 
+// SQLite persistence for instance registrations
+const dbDir = process.env.THUMB_CACHE_DIR
+  ? path.resolve(process.env.THUMB_CACHE_DIR)
+  : path.resolve(
+      import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname),
+      "../../data",
+    );
+fs.mkdirSync(dbDir, { recursive: true });
+
+const db = new Database(path.join(dbDir, "instances.sqlite"));
+db.pragma("journal_mode = WAL");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS instances (
+    instance_id TEXT PRIMARY KEY,
+    host_user_id TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+`);
+
+const insertInstanceStmt = db.prepare(
+  "INSERT OR REPLACE INTO instances (instance_id, host_user_id, guild_id, created_at) VALUES (?, ?, ?, ?)"
+);
+const deleteInstanceStmt = db.prepare("DELETE FROM instances WHERE instance_id = ?");
+const deleteExpiredInstancesStmt = db.prepare("DELETE FROM instances WHERE created_at < ?");
+
+// Load existing valid instances into memory on startup
+const validCutoff = Date.now() - INSTANCE_TTL_MS;
+deleteExpiredInstancesStmt.run(validCutoff);
+const existingInstances = db.prepare("SELECT instance_id, host_user_id, guild_id, created_at FROM instances").all() as Array<{
+  instance_id: string;
+  host_user_id: string;
+  guild_id: string;
+  created_at: number;
+}>;
+for (const row of existingInstances) {
+  instanceHosts.set(row.instance_id, {
+    hostUserId: row.host_user_id,
+    guildId: row.guild_id,
+    createdAt: row.created_at,
+  });
+  guildInstances.set(row.guild_id, row.instance_id);
+}
+console.log(`[Discord] Loaded ${existingInstances.length} instances from SQLite`);
+
+export function closeInstanceDb(): void {
+  db.close();
+}
+
 function pruneStaleInstances(): void {
   const now = Date.now();
   for (const [id, entry] of instanceHosts) {
     if (now - entry.createdAt > INSTANCE_TTL_MS) {
       instanceHosts.delete(id);
+      deleteInstanceStmt.run(id);
       // Clean up guild mapping too
       if (guildInstances.get(entry.guildId) === id) {
         guildInstances.delete(entry.guildId);
@@ -151,6 +204,7 @@ router.post("/register", (req: Request, res: Response) => {
   const existingInstanceId = guildInstances.get(guildId);
   if (existingInstanceId && existingInstanceId !== instanceId && instanceHosts.has(existingInstanceId)) {
     // Remove the old instance so the new one can take over
+    deleteInstanceStmt.run(existingInstanceId);
     instanceHosts.delete(existingInstanceId);
     guildInstances.delete(guildId);
   }
@@ -165,6 +219,7 @@ router.post("/register", (req: Request, res: Response) => {
       if (guildInstances.get(entry.guildId) === id) {
         guildInstances.delete(entry.guildId);
       }
+      deleteInstanceStmt.run(id);
       instanceHosts.delete(id);
     }
   }
@@ -172,6 +227,7 @@ router.post("/register", (req: Request, res: Response) => {
   if (!instanceHosts.has(instanceId)) {
     instanceHosts.set(instanceId, { hostUserId: userId, guildId, createdAt: Date.now() });
     guildInstances.set(guildId, instanceId);
+    insertInstanceStmt.run(instanceId, userId, guildId, Date.now());
   }
 
   const hostId = instanceHosts.get(instanceId)!.hostUserId;
