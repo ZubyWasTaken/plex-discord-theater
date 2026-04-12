@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { getSessionToken } from "../lib/api";
 
+const MAX_RECONNECT_ATTEMPTS = 20;
+
 export interface SyncState {
   connected: boolean;
   ratingKey: string | null;
@@ -14,6 +16,12 @@ export interface SyncState {
   isHost: boolean | null;
   /** Increments only on explicit commands (play/pause/resume/seek), not heartbeats */
   commandSeq: number;
+  /** Timestamp of the last host command — used to detect stale state on reconnect */
+  lastCommandAt: number;
+  /** True if the WebSocket closed due to authentication failure (code 1008) */
+  authFailed: boolean;
+  /** True if max reconnect attempts exhausted */
+  reconnectFailed: boolean;
 }
 
 export interface SyncActions {
@@ -42,6 +50,9 @@ const INITIAL_STATE: SyncState = {
   hlsSessionId: null,
   isHost: null,
   commandSeq: 0,
+  lastCommandAt: 0,
+  authFailed: false,
+  reconnectFailed: false,
 };
 
 export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
@@ -120,6 +131,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               position: (msg.position as number) ?? 0,
               hlsSessionId: (msg.hlsSessionId as string) || null,
               commandSeq: prev.commandSeq + 1,
+              lastCommandAt: (msg.lastCommandAt as number) ?? Date.now(),
             }));
             break;
           case "play":
@@ -192,10 +204,25 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
         }
       });
 
-      ws.addEventListener("close", () => {
+      ws.addEventListener("close", (event) => {
         if (!active) return;
         wsRef.current = null;
         setState((prev) => ({ ...prev, connected: false }));
+
+        // Close code 1008 = policy violation (auth failure) — don't retry,
+        // the session token is invalid and reconnecting will loop forever
+        if (event.code === 1008) {
+          console.error("[Sync] Auth failure (1008), not reconnecting:", event.reason);
+          setState((prev) => ({ ...prev, authFailed: true }));
+          return;
+        }
+
+        // Cap reconnect attempts to prevent infinite loops
+        if (retryRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          console.error("[Sync] Max reconnect attempts reached, giving up");
+          setState((prev) => ({ ...prev, reconnectFailed: true }));
+          return;
+        }
 
         // Reconnect with exponential backoff
         const delay = Math.min(1000 * Math.pow(2, retryRef.current), 15000);

@@ -3,7 +3,7 @@ import type { Server } from "http";
 import { isValidSession, getSessionUserId } from "../middleware/auth.js";
 import { instanceHosts } from "../routes/discord.js";
 import { plexFetch } from "./plex.js";
-import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped } from "../routes/plex.js";
+import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped, isSessionStopping, markSessionStopping, clearSessionStopping, terminatePlexSession, pingPlexTranscode } from "../routes/plex.js";
 import { createTracker, handleTrackerSocket, destroyTracker } from "./tracker.js";
 
 /** Interval between WebSocket pings to detect dead connections. */
@@ -17,36 +17,43 @@ const WS_PING_INTERVAL_MS = 30_000;
 async function killPlexTranscode(hlsSessionId: string | null): Promise<void> {
   if (!hlsSessionId) return;
 
-  const plexKey = getPlexTranscodeKey(hlsSessionId);
-  const clientId = getSessionClientId(hlsSessionId);
-  const ratingKey = getSessionRatingKey(hlsSessionId) || null;
-  const stopKey = plexKey || hlsSessionId;
-
-  // Stop the Plex transcode FIRST, then clear the mapping.
-  try {
-    const res = await plexFetch(
-      "/video/:/transcode/universal/stop",
-      { session: stopKey },
-      {
-        "X-Plex-Session-Identifier": stopKey,
-        "X-Plex-Client-Identifier": clientId,
-      },
-    );
-    console.log("[Sync] Stop transcode", stopKey.substring(0, 8),
-      plexKey ? "(mapped plex key)" : "(our UUID, no mapping)",
-      "→", res.status);
-  } catch (err) {
-    console.error("[Sync] Stop transcode error:", err);
+  if (isSessionStopping(hlsSessionId)) {
+    console.log("[Sync] Stop skipped for", hlsSessionId.substring(0, 8), "(already stopping via HTTP)");
+    return;
   }
 
-  // Now clear the mapping and block segment proxy
-  markTranscodeStopped(hlsSessionId);
+  markSessionStopping(hlsSessionId);
 
-  // Notify Plex that playback stopped so it clears per-client state.
-  // Await this — if it's fire-and-forget, a new start can race ahead
-  // before Plex processes the timeline update, causing 400.
-  // Pass the ratingKey captured BEFORE markTranscodeStopped cleared it.
-  await notifyPlexStopped(ratingKey, hlsSessionId);
+  try {
+    const plexKey = getPlexTranscodeKey(hlsSessionId);
+    const clientId = getSessionClientId(hlsSessionId);
+    const ratingKey = getSessionRatingKey(hlsSessionId) || null;
+    const stopKey = plexKey || hlsSessionId;
+
+    try {
+      const res = await plexFetch(
+        "/video/:/transcode/universal/stop",
+        { transcodeSessionId: stopKey },
+        {
+          "X-Plex-Session-Identifier": stopKey,
+          "X-Plex-Client-Identifier": clientId,
+        },
+      );
+      console.log("[Sync] Stop transcode", stopKey.substring(0, 8),
+        plexKey ? "(mapped plex key)" : "(our UUID, no mapping)",
+        "→", res.status);
+    } catch (err) {
+      console.error("[Sync] Stop transcode error:", err);
+    }
+
+    markTranscodeStopped(hlsSessionId);
+    await notifyPlexStopped(ratingKey, hlsSessionId);
+    if (plexKey) {
+      await terminatePlexSession(plexKey);
+    }
+  } finally {
+    clearSessionStopping(hlsSessionId);
+  }
 }
 
 interface RoomClient {
@@ -71,6 +78,27 @@ interface Room {
 }
 
 const rooms = new Map<string, Room>();
+
+/** Server-side ping intervals per room — keeps transcode alive independent of client connectivity. */
+const roomPingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+
+function startRoomPing(instanceId: string, hlsSessionId: string): void {
+  stopRoomPing(instanceId);
+  const interval = setInterval(() => {
+    pingPlexTranscode(hlsSessionId).catch(() => {});
+  }, 30_000);
+  interval.unref();
+  roomPingIntervals.set(instanceId, interval);
+}
+
+function stopRoomPing(instanceId: string): void {
+  const interval = roomPingIntervals.get(instanceId);
+  if (interval) {
+    clearInterval(interval);
+    roomPingIntervals.delete(instanceId);
+  }
+}
+
 let wss: WebSocketServer | null = null;
 let trackerWss: WebSocketServer | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -253,6 +281,7 @@ export function attachWebSocketServer(server: Server): void {
           playing: room.state.playing,
           position: interpolatedPosition(room.state),
           hlsSessionId: room.state.hlsSessionId,
+          lastCommandAt: room.state.updatedAt,
         });
 
         return;
@@ -279,6 +308,7 @@ export function attachWebSocketServer(server: Server): void {
           room.state.playing = true;
           room.state.position = 0;
           room.state.updatedAt = Date.now();
+          if (room.state.hlsSessionId) startRoomPing(roomId, room.state.hlsSessionId);
           broadcast(room, ws, {
             type: "play",
             ratingKey: room.state.ratingKey,
@@ -317,6 +347,7 @@ export function attachWebSocketServer(server: Server): void {
           room.state.playing = false;
           room.state.position = 0;
           room.state.updatedAt = Date.now();
+          stopRoomPing(roomId);
           broadcast(room, ws, { type: "stop" });
           // Kill the Plex transcode server-side so it dies even if viewers
           // are still fetching segments (their hls.js takes a moment to tear down)
@@ -372,6 +403,7 @@ export function attachWebSocketServer(server: Server): void {
           const disconnectedSessionId = room.state.hlsSessionId;
           room.state.playing = false;
           room.state.hlsSessionId = null;
+          stopRoomPing(roomId);
           killPlexTranscode(disconnectedSessionId).catch(() => {});
         }
       }
@@ -413,5 +445,8 @@ export function closeWebSocketServer(): void {
     trackerWss = null;
   }
   destroyTracker();
+  for (const instanceId of roomPingIntervals.keys()) {
+    stopRoomPing(instanceId);
+  }
   rooms.clear();
 }

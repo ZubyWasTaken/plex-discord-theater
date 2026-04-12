@@ -9,7 +9,7 @@ import type { SyncState, SyncActions } from "../hooks/useSync";
 const PING_INTERVAL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const DRIFT_THRESHOLD_S = 2;
-const HEARTBEAT_DRIFT_THRESHOLD_S = 5;
+const HEARTBEAT_DRIFT_THRESHOLD_S = 3;
 const MAX_VIEWER_RETRIES = 3;
 const MAX_NETWORK_RETRIES = 5;
 
@@ -137,6 +137,15 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         const hls = new HlsWithP2P({
           maxBufferLength: 30,
           maxMaxBufferLength: 60,
+          manifestLoadingMaxRetry: 4,
+          manifestLoadingRetryDelay: 1000,
+          manifestLoadingMaxRetryTimeout: 30000,
+          levelLoadingMaxRetry: 6,
+          levelLoadingRetryDelay: 1000,
+          fragLoadingMaxRetry: 8,
+          fragLoadingRetryDelay: 1000,
+          fragLoadingMaxRetryTimeout: 30000,
+          startFragPrefetch: true,
           xhrSetup: (xhr: XMLHttpRequest, _urlStr: string) => {
             if (token) {
               xhr.setRequestHeader("Authorization", `Bearer ${token}`);
@@ -151,18 +160,21 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
               announceTrackers: [
                 `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/tracker${token ? `?token=${encodeURIComponent(token)}` : ""}`,
               ],
-              // Reduce "must fetch via HTTP" window so P2P has a chance to supply
-              // more segments before the HTTP downloader grabs them
-              highDemandTimeWindow: 8,
-              // Widen the P2P prefetch window so peers look further ahead
-              p2pDownloadTimeWindow: 8000,
-              // Narrow the HTTP prefetch window — let P2P fill the gap
-              httpDownloadTimeWindow: 2000,
-              // Allow more concurrent P2P transfers
-              simultaneousP2PDownloads: 5,
-              simultaneousHttpDownloads: 1,
-              // p2p-media-loader uses its own fetch() for segments, bypassing
-              // hls.js's xhrSetup. Inject the auth header here.
+              // Seconds of content that must be available via HTTP
+              highDemandTimeWindow: 15,
+              // Seconds of content to prefetch via P2P
+              p2pDownloadTimeWindow: 30,
+              // Seconds of content to prefetch via HTTP
+              httpDownloadTimeWindow: 6,
+              // Concurrent P2P and HTTP segment downloads
+              simultaneousP2PDownloads: 3,
+              simultaneousHttpDownloads: 2,
+              rtcConfig: {
+                iceServers: [
+                  { urls: "stun:stun.l.google.com:19302" },
+                ],
+              },
+              // Inject auth header for p2p-media-loader's fetch() calls
               httpRequestSetup: async (url, _byteRange, signal, requestByteRange) => {
                 const headers: Record<string, string> = {};
                 if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -361,6 +373,14 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
       {syncState?.hostDisconnected && (
         <div style={styles.hostDisconnected}>Host disconnected — waiting for reconnection...</div>
+      )}
+
+      {syncState?.authFailed && (
+        <div style={styles.error}>Session expired — please close and restart the activity</div>
+      )}
+
+      {syncState?.reconnectFailed && (
+        <div style={styles.error}>Connection lost — please close and restart the activity</div>
       )}
 
       <video

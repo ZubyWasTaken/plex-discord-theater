@@ -5,9 +5,9 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import path from "path";
 import { fileURLToPath } from "url";
-import discordRoutes from "./routes/discord.js";
+import discordRoutes, { closeInstanceDb } from "./routes/discord.js";
 import plexRoutes from "./routes/plex.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAuth, closeSessionDb } from "./middleware/auth.js";
 import * as thumbCache from "./services/thumb-cache.js";
 import { attachWebSocketServer, closeWebSocketServer } from "./services/sync.js";
 
@@ -83,6 +83,7 @@ const hlsLimiter = rateLimit({
   max: isDev ? 50000 : 3000,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
 });
 
 app.use("/api/token", authLimiter);
@@ -130,13 +131,15 @@ async function shutdown(signal: string) {
   closeWebSocketServer();
   server.close(() => {
     thumbCache.close();
+    closeSessionDb();
+    closeInstanceDb();
     process.exit(0);
   });
   // Fallback: force exit if server.close() hangs (e.g. lingering keep-alive connections)
   setTimeout(() => {
     console.warn("Shutdown timeout — forcing exit");
     process.exit(1);
-  }, 5000).unref();
+  }, 15000).unref();
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));

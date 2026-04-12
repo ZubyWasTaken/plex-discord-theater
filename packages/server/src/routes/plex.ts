@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { plexFetch, plexJSON, plexUrl } from "../services/plex.js";
+import { plexFetch, plexFetchSegment, plexJSON, plexUrl } from "../services/plex.js";
 import * as thumbCache from "../services/thumb-cache.js";
 
 const router = Router();
@@ -483,6 +483,28 @@ export function getSessionClientId(_sessionId: string): string {
 const activeTranscodeKeys = new Set<string>();
 
 /**
+ * Sessions currently being stopped. Prevents the WebSocket stop handler and
+ * HTTP DELETE handler from racing to send duplicate stop calls to Plex,
+ * which creates phantom per-client state blocking new transcodes.
+ */
+const stoppingSessions = new Set<string>();
+
+/** Check if a session is already being stopped (used by sync.ts). */
+export function isSessionStopping(sessionId: string): boolean {
+  return stoppingSessions.has(sessionId);
+}
+
+/** Mark a session as currently stopping (used by sync.ts). */
+export function markSessionStopping(sessionId: string): void {
+  stoppingSessions.add(sessionId);
+}
+
+/** Clear the stopping flag for a session (used by sync.ts). */
+export function clearSessionStopping(sessionId: string): void {
+  stoppingSessions.delete(sessionId);
+}
+
+/**
  * Every Plex transcode key allocated during this server instance's lifetime,
  * mapped to the timestamp when the key was first seen. Used by flushStaleTranscodes
  * to identify orphaned transcodes that belong to us. Entries older than 24h are
@@ -531,11 +553,83 @@ export async function notifyPlexStopped(ratingKey: string | null, sessionId: str
         "X-Plex-Session-Identifier": sessionId,
         "X-Plex-Client-Identifier": OUR_CLIENT_ID,
       },
+      "POST",
     );
     console.log("[HLS] Timeline stopped for session:", sessionId.substring(0, 8),
       "ratingKey:", effectiveRatingKey, "→", res.status);
   } catch (err) {
     console.log("[HLS] Timeline stopped failed (non-fatal):", err);
+  }
+}
+
+/**
+ * Safely terminate a specific Plex session using the official API.
+ * Triple safety:
+ * 1. Matches TranscodeSession.key against our exact plexKey
+ * 2. Verifies Player.machineIdentifier is ours
+ * 3. Verifies plexKey exists in our allKnownPlexKeys map
+ * This ensures we never terminate another bot instance's or external user's session.
+ */
+async function terminatePlexSession(plexKey: string): Promise<void> {
+  if (!allKnownPlexKeys.has(plexKey)) {
+    if (DEBUG) console.log("[HLS] Terminate skipped — plexKey not in allKnownPlexKeys:", plexKey.substring(0, 8));
+    return;
+  }
+
+  try {
+    const data = await plexJSON<{
+      MediaContainer: {
+        Metadata?: Array<{
+          Player?: { machineIdentifier?: string };
+          TranscodeSession?: { key?: string };
+          Session?: { id?: string };
+        }>;
+      };
+    }>("/status/sessions");
+
+    const sessions = data.MediaContainer.Metadata || [];
+    for (const s of sessions) {
+      const transcodeKey = s.TranscodeSession?.key;
+      const keyUuid = transcodeKey?.split("/").pop();
+
+      if (keyUuid !== plexKey) continue;
+      if (!s.Player?.machineIdentifier?.startsWith("plex-discord-theater")) continue;
+
+      const sessionId = s.Session?.id;
+      if (!sessionId) continue;
+
+      console.log("[HLS] Terminating Plex session:", sessionId, "for transcode key:", plexKey.substring(0, 8));
+      await plexFetch(
+        "/status/sessions/terminate",
+        { sessionId, reason: "Playback ended" },
+        undefined,
+        "POST",
+      );
+      return;
+    }
+
+    if (DEBUG) console.log("[HLS] No matching Plex session found for terminate:", plexKey.substring(0, 8));
+  } catch (err) {
+    console.log("[HLS] Terminate session failed (non-fatal):", err);
+  }
+}
+
+export { terminatePlexSession };
+
+/** Ping Plex to keep a transcode session alive. Called server-side per room. */
+export async function pingPlexTranscode(hlsSessionId: string): Promise<void> {
+  const plexKey = plexTranscodeKeys.get(hlsSessionId) ?? hlsSessionId;
+  try {
+    await plexFetch(
+      "/video/:/transcode/universal/ping",
+      { transcodeSessionId: plexKey },
+      {
+        "X-Plex-Session-Identifier": plexKey,
+        "X-Plex-Client-Identifier": OUR_CLIENT_ID,
+      },
+    );
+  } catch (err) {
+    console.error("[HLS] Server-side ping failed for", hlsSessionId.substring(0, 8), err);
   }
 }
 
@@ -580,7 +674,7 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
         try {
           await plexFetch(
             "/video/:/transcode/universal/stop",
-            { session: key },
+            { transcodeSessionId: key },
             {
               "X-Plex-Session-Identifier": key,
               "X-Plex-Client-Identifier": OUR_CLIENT_ID,
@@ -597,7 +691,7 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
           try {
             await plexFetch(
               "/video/:/transcode/universal/stop",
-              { session: sessionKey },
+              { transcodeSessionId: sessionKey },
               {
                 "X-Plex-Session-Identifier": sessionKey,
                 "X-Plex-Client-Identifier": OUR_CLIENT_ID,
@@ -635,7 +729,7 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
         try {
           await plexFetch(
             "/video/:/transcode/universal/stop",
-            { session: t.key },
+            { transcodeSessionId: t.key },
             {
               "X-Plex-Session-Identifier": t.key,
               "X-Plex-Client-Identifier": OUR_CLIENT_ID,
@@ -734,8 +828,11 @@ router.get(
         directStream: "0",
         directStreamAudio: "1",
         videoResolution: "1920x1080",
-        maxVideoBitrate: "8000",
-        videoQuality: "100",
+        videoBitrate: "4000",
+        peakBitrate: "8000",
+        videoQuality: "99",
+        autoAdjustQuality: "1",
+        location: "wan",
         mediaBufferSize: "102400",
         subtitles: subtitleMode,
       };
@@ -760,7 +857,7 @@ router.get(
       // state from a previous session (even though the transcode itself was stopped).
       const decisionPath = "/video/:/transcode/universal/decision";
       try {
-        const decisionRes = await plexFetch(decisionPath, { ...params, session: sessionId }, hlsHeaders);
+        const decisionRes = await plexFetch(decisionPath, { ...params, transcodeSessionId: sessionId }, hlsHeaders);
         // Log the decision body — contains generalDecisionCode that tells us
         // whether Plex will direct play (1000), transcode (1001), or error (2xxx/4xxx)
         try {
@@ -780,7 +877,7 @@ router.get(
       }
 
       // Pass session as both a query param and header (matching plex-mpv-shim behavior)
-      const startParams = { ...params, session: sessionId };
+      const startParams = { ...params, transcodeSessionId: sessionId };
       const hlsPath = "/video/:/transcode/universal/start.m3u8";
       let plexRes = await plexFetch(hlsPath, startParams, hlsHeaders);
 
@@ -807,7 +904,7 @@ router.get(
           }
           // Re-prime decision before retry
           try {
-            const retryDecision = await plexFetch(decisionPath, { ...params, session: sessionId }, hlsHeaders);
+            const retryDecision = await plexFetch(decisionPath, { ...params, transcodeSessionId: sessionId }, hlsHeaders);
             console.log("[HLS] Retry decision:", retryDecision.status);
           } catch {}
           plexRes = await plexFetch(hlsPath, startParams, hlsHeaders);
@@ -833,8 +930,17 @@ router.get(
         allKnownPlexKeys.set(plexKeyMatch[1], Date.now());
         console.log("[HLS] Plex transcode key:", plexKeyMatch[1].substring(0, 8), "for session:", sessionId.substring(0, 8));
       } else {
-        console.warn("[HLS] Could not extract Plex transcode key from manifest for session:",
-          sessionId.substring(0, 8), "— stop/segment-blocking will not work for this session");
+        console.error("[HLS] FATAL: Could not extract Plex transcode key from manifest for session:",
+          sessionId.substring(0, 8), "— aborting session to prevent phantom state");
+        try {
+          await plexFetch(
+            "/video/:/transcode/universal/stop",
+            { transcodeSessionId: sessionId },
+            { "X-Plex-Session-Identifier": sessionId, "X-Plex-Client-Identifier": OUR_CLIENT_ID },
+          );
+        } catch {}
+        await notifyPlexStopped(ratingKey, sessionId);
+        throw new Error("Could not extract Plex transcode key from manifest");
       }
 
       const authToken = req.query.token as string | undefined;
@@ -894,7 +1000,7 @@ router.get("/hls/seg", async (req: Request, res: Response) => {
   if (DEBUG) console.log("[HLS seg] Fetching:", segPath.substring(0, 120));
 
   try {
-    const plexRes = await plexFetch(segPath);
+    const plexRes = await plexFetchSegment(segPath);
 
     if (!plexRes.ok) {
       // Drain the body so the underlying TCP connection is returned to the pool
@@ -961,7 +1067,7 @@ router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
     const plexKey = plexTranscodeKeys.get(sessionId) ?? sessionId;
     await plexFetch(
       "/video/:/transcode/universal/ping",
-      { session: plexKey },
+      { transcodeSessionId: plexKey },
       {
         "X-Plex-Session-Identifier": plexKey,
         "X-Plex-Client-Identifier": getSessionClientId(sessionId),
@@ -987,45 +1093,57 @@ router.delete(
       return;
     }
 
-    // Clear cached manifest
-    manifestCache.delete(sessionId);
-    const ratingKey = sessionRatingKeys.get(sessionId) || null;
-    const plexKey = plexTranscodeKeys.get(sessionId);
-
-    // Only send the stop to Plex if we still have a valid Plex transcode key.
-    // If the mapping is gone, the WebSocket handler already stopped it — sending
-    // a stop with our UUID creates ghost state in Plex that blocks new transcodes.
-    if (plexKey) {
-      try {
-        const stopRes = await plexFetch(
-          "/video/:/transcode/universal/stop",
-          { session: plexKey },
-          {
-            "X-Plex-Session-Identifier": plexKey,
-            "X-Plex-Client-Identifier": OUR_CLIENT_ID,
-          },
-        );
-        console.log("[HLS] Stop session", sessionId.substring(0, 8),
-          `(plex key: ${plexKey.substring(0, 8)})`, "→", stopRes.status);
-      } catch (err) {
-        console.error("Stop session error:", err);
-        res.status(502).json({ error: "Stop failed" });
-        return;
-      } finally {
-        // Always clear mappings and notify Plex — even on error the transcode
-        // key should not be reused, and notifyPlexStopped prevents stale 400s
-        activeTranscodeKeys.delete(plexKey);
-        plexTranscodeKeys.delete(sessionId);
-        sessionRatingKeys.delete(sessionId);
-        notifyPlexStopped(ratingKey, sessionId).catch(() => {});
-      }
-    } else {
-      sessionRatingKeys.delete(sessionId);
-      if (DEBUG) console.log("[HLS] Stop session", sessionId.substring(0, 8),
-        "(already stopped via sync)");
+    if (stoppingSessions.has(sessionId)) {
+      if (DEBUG) console.log("[HLS] Stop session", sessionId.substring(0, 8), "(already stopping via sync)");
+      res.json({ ok: true });
+      return;
     }
+    stoppingSessions.add(sessionId);
 
-    res.json({ ok: true });
+    try {
+      // Clear cached manifest
+      manifestCache.delete(sessionId);
+      const ratingKey = sessionRatingKeys.get(sessionId) || null;
+      const plexKey = plexTranscodeKeys.get(sessionId);
+
+      // Only send the stop to Plex if we still have a valid Plex transcode key.
+      // If the mapping is gone, the WebSocket handler already stopped it — sending
+      // a stop with our UUID creates ghost state in Plex that blocks new transcodes.
+      if (plexKey) {
+        try {
+          const stopRes = await plexFetch(
+            "/video/:/transcode/universal/stop",
+            { transcodeSessionId: plexKey },
+            {
+              "X-Plex-Session-Identifier": plexKey,
+              "X-Plex-Client-Identifier": OUR_CLIENT_ID,
+            },
+          );
+          console.log("[HLS] Stop session", sessionId.substring(0, 8),
+            `(plex key: ${plexKey.substring(0, 8)})`, "→", stopRes.status);
+        } catch (err) {
+          console.error("Stop session error:", err);
+          res.status(502).json({ error: "Stop failed" });
+          return;
+        } finally {
+          // Always clear mappings and notify Plex — even on error the transcode
+          // key should not be reused, and notifyPlexStopped prevents stale 400s
+          activeTranscodeKeys.delete(plexKey);
+          plexTranscodeKeys.delete(sessionId);
+          sessionRatingKeys.delete(sessionId);
+          await notifyPlexStopped(ratingKey, sessionId);
+          if (plexKey) await terminatePlexSession(plexKey);
+        }
+      } else {
+        sessionRatingKeys.delete(sessionId);
+        if (DEBUG) console.log("[HLS] Stop session", sessionId.substring(0, 8),
+          "(already stopped via sync)");
+      }
+
+      res.json({ ok: true });
+    } finally {
+      stoppingSessions.delete(sessionId);
+    }
   },
 );
 
@@ -1064,7 +1182,7 @@ router.delete("/hls/sessions", async (req: Request, res: Response) => {
       const key = s.TranscodeSession?.key;
       if (key) {
         try {
-          const stopRes = await plexFetch(`/video/:/transcode/universal/stop`, { session: key }, {
+          const stopRes = await plexFetch(`/video/:/transcode/universal/stop`, { transcodeSessionId: key }, {
             "X-Plex-Session-Identifier": key,
             "X-Plex-Client-Identifier": OUR_CLIENT_ID,
           });
@@ -1209,13 +1327,14 @@ export async function stopAllActiveSessions(): Promise<void> {
     try {
       await plexFetch(
         "/video/:/transcode/universal/stop",
-        { session: plexKey },
+        { transcodeSessionId: plexKey },
         { "X-Plex-Client-Identifier": OUR_CLIENT_ID },
       );
       console.log("[Shutdown] Stopped transcode:", plexKey.substring(0, 8));
     } catch {}
     markTranscodeStopped(sessionId);
     await notifyPlexStopped(ratingKey, sessionId).catch(() => {});
+    await terminatePlexSession(plexKey).catch(() => {});
   }
 }
 
