@@ -9,7 +9,7 @@ import type { SyncState, SyncActions } from "../hooks/useSync";
 const PING_INTERVAL_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const DRIFT_THRESHOLD_S = 2;
-const HEARTBEAT_DRIFT_THRESHOLD_S = 5;
+const HEARTBEAT_DRIFT_THRESHOLD_S = 3;
 const MAX_VIEWER_RETRIES = 3;
 const MAX_NETWORK_RETRIES = 5;
 

@@ -16,6 +16,8 @@ export interface SyncState {
   isHost: boolean | null;
   /** Increments only on explicit commands (play/pause/resume/seek), not heartbeats */
   commandSeq: number;
+  /** Timestamp of the last host command — used to detect stale state on reconnect */
+  lastCommandAt: number;
   /** True if the WebSocket closed due to authentication failure (code 1008) */
   authFailed: boolean;
   /** True if max reconnect attempts exhausted */
@@ -48,6 +50,7 @@ const INITIAL_STATE: SyncState = {
   hlsSessionId: null,
   isHost: null,
   commandSeq: 0,
+  lastCommandAt: 0,
   authFailed: false,
   reconnectFailed: false,
 };
@@ -128,6 +131,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               position: (msg.position as number) ?? 0,
               hlsSessionId: (msg.hlsSessionId as string) || null,
               commandSeq: prev.commandSeq + 1,
+              lastCommandAt: (msg.lastCommandAt as number) ?? Date.now(),
             }));
             break;
           case "play":

@@ -616,6 +616,23 @@ async function terminatePlexSession(plexKey: string): Promise<void> {
 
 export { terminatePlexSession };
 
+/** Ping Plex to keep a transcode session alive. Called server-side per room. */
+export async function pingPlexTranscode(hlsSessionId: string): Promise<void> {
+  const plexKey = plexTranscodeKeys.get(hlsSessionId) ?? hlsSessionId;
+  try {
+    await plexFetch(
+      "/video/:/transcode/universal/ping",
+      { transcodeSessionId: plexKey },
+      {
+        "X-Plex-Session-Identifier": plexKey,
+        "X-Plex-Client-Identifier": OUR_CLIENT_ID,
+      },
+    );
+  } catch (err) {
+    console.error("[HLS] Server-side ping failed for", hlsSessionId.substring(0, 8), err);
+  }
+}
+
 /**
  * Stop transcode sessions created by our app (plex-discord-theater).
  * When ratingKey is provided, only stops sessions for that specific media item

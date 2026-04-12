@@ -3,7 +3,7 @@ import type { Server } from "http";
 import { isValidSession, getSessionUserId } from "../middleware/auth.js";
 import { instanceHosts } from "../routes/discord.js";
 import { plexFetch } from "./plex.js";
-import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped, isSessionStopping, markSessionStopping, clearSessionStopping, terminatePlexSession } from "../routes/plex.js";
+import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped, isSessionStopping, markSessionStopping, clearSessionStopping, terminatePlexSession, pingPlexTranscode } from "../routes/plex.js";
 import { createTracker, handleTrackerSocket, destroyTracker } from "./tracker.js";
 
 /** Interval between WebSocket pings to detect dead connections. */
@@ -78,6 +78,27 @@ interface Room {
 }
 
 const rooms = new Map<string, Room>();
+
+/** Server-side ping intervals per room — keeps transcode alive independent of client connectivity. */
+const roomPingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+
+function startRoomPing(instanceId: string, hlsSessionId: string): void {
+  stopRoomPing(instanceId);
+  const interval = setInterval(() => {
+    pingPlexTranscode(hlsSessionId).catch(() => {});
+  }, 30_000);
+  interval.unref();
+  roomPingIntervals.set(instanceId, interval);
+}
+
+function stopRoomPing(instanceId: string): void {
+  const interval = roomPingIntervals.get(instanceId);
+  if (interval) {
+    clearInterval(interval);
+    roomPingIntervals.delete(instanceId);
+  }
+}
+
 let wss: WebSocketServer | null = null;
 let trackerWss: WebSocketServer | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -260,6 +281,7 @@ export function attachWebSocketServer(server: Server): void {
           playing: room.state.playing,
           position: interpolatedPosition(room.state),
           hlsSessionId: room.state.hlsSessionId,
+          lastCommandAt: room.state.updatedAt,
         });
 
         return;
@@ -286,6 +308,7 @@ export function attachWebSocketServer(server: Server): void {
           room.state.playing = true;
           room.state.position = 0;
           room.state.updatedAt = Date.now();
+          if (room.state.hlsSessionId) startRoomPing(roomId, room.state.hlsSessionId);
           broadcast(room, ws, {
             type: "play",
             ratingKey: room.state.ratingKey,
@@ -324,6 +347,7 @@ export function attachWebSocketServer(server: Server): void {
           room.state.playing = false;
           room.state.position = 0;
           room.state.updatedAt = Date.now();
+          stopRoomPing(roomId);
           broadcast(room, ws, { type: "stop" });
           // Kill the Plex transcode server-side so it dies even if viewers
           // are still fetching segments (their hls.js takes a moment to tear down)
@@ -379,6 +403,7 @@ export function attachWebSocketServer(server: Server): void {
           const disconnectedSessionId = room.state.hlsSessionId;
           room.state.playing = false;
           room.state.hlsSessionId = null;
+          stopRoomPing(roomId);
           killPlexTranscode(disconnectedSessionId).catch(() => {});
         }
       }
@@ -420,5 +445,8 @@ export function closeWebSocketServer(): void {
     trackerWss = null;
   }
   destroyTracker();
+  for (const instanceId of roomPingIntervals.keys()) {
+    stopRoomPing(instanceId);
+  }
   rooms.clear();
 }
