@@ -10,6 +10,7 @@ A Discord Activity that lets you browse your Plex library and watch movies and T
 - **P2P segment sharing** — viewers share HLS segments with each other, reducing server bandwidth
 - **Automatic host promotion** — if the host leaves, the next viewer is promoted so the session continues
 - **Thumbnail caching** — artwork is cached server-side in SQLite for fast browsing
+- **Persistent sessions** — sessions and host roles survive server restarts (SQLite-backed)
 - **Secure** — your Plex token never leaves the server; the backend proxies everything
 
 ## How It Works
@@ -32,7 +33,8 @@ Viewers in the same watch session automatically form a peer-to-peer mesh using W
 - **BitTorrent tracker** — the server runs an embedded [bittorrent-tracker](https://github.com/webtorrent/bittorrent-tracker) over WebSocket for peer discovery and signaling
 - **Swarm per session** — viewers watching the same content share a swarm ID, so P2P only happens within a watch session
 - **Transparent fallback** — if a segment isn't available from peers in time, it falls back to fetching from the server normally
-- **Tuned for live-ish playback** — wide P2P prefetch window (8000s) with narrow HTTP window (2000s) and capped concurrent HTTP downloads to 1, so peers have time to supply segments before the client fetches them directly
+- **Tuned for live-ish playback** — P2P prefetch window of 30s with 6s HTTP window and 2 concurrent HTTP downloads, so peers have time to supply segments before the client fetches them directly
+- **NAT traversal** — uses a STUN server for WebRTC connections behind NAT
 
 This significantly reduces bandwidth from Plex when multiple people are watching together — the server transcodes once and peers distribute segments amongst themselves.
 
@@ -137,6 +139,7 @@ Set the resulting `https://xxxx.trycloudflare.com` URL as the URL mapping in you
 | "Failed to connect to Discord" | Make sure you're launching as a Discord Activity from a voice channel, not visiting the URL directly |
 | Library is empty | Check that `PLEX_URL` and `PLEX_TOKEN` are correct and the server can reach Plex |
 | Video won't play | Check browser console for HLS errors; ensure Plex can transcode |
+| "Session expired" banner | The server restarted and your session is stale — close and reopen the Activity |
 | Tunnel URL changed | Update the URL mapping in Discord Developer Portal |
 
 ## License
