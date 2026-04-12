@@ -40,6 +40,11 @@ db.exec(`
 const insertInstanceStmt = db.prepare(
   "INSERT OR REPLACE INTO instances (instance_id, host_user_id, guild_id, created_at) VALUES (?, ?, ?, ?)"
 );
+const updateHostStmt = db.prepare("UPDATE instances SET host_user_id = ? WHERE instance_id = ?");
+
+export function updateInstanceHost(instanceId: string, newHostUserId: string): void {
+  updateHostStmt.run(newHostUserId, instanceId);
+}
 const deleteInstanceStmt = db.prepare("DELETE FROM instances WHERE instance_id = ?");
 const deleteExpiredInstancesStmt = db.prepare("DELETE FROM instances WHERE created_at < ?");
 
@@ -225,9 +230,10 @@ router.post("/register", (req: Request, res: Response) => {
   }
 
   if (!instanceHosts.has(instanceId)) {
-    instanceHosts.set(instanceId, { hostUserId: userId, guildId, createdAt: Date.now() });
+    const now = Date.now();
+    instanceHosts.set(instanceId, { hostUserId: userId, guildId, createdAt: now });
     guildInstances.set(guildId, instanceId);
-    insertInstanceStmt.run(instanceId, userId, guildId, Date.now());
+    insertInstanceStmt.run(instanceId, userId, guildId, now);
   }
 
   const hostId = instanceHosts.get(instanceId)!.hostUserId;

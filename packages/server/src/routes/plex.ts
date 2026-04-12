@@ -1328,7 +1328,7 @@ export async function stopAllActiveSessions(): Promise<void> {
       await plexFetch(
         "/video/:/transcode/universal/stop",
         { transcodeSessionId: plexKey },
-        { "X-Plex-Client-Identifier": OUR_CLIENT_ID },
+        { "X-Plex-Session-Identifier": plexKey, "X-Plex-Client-Identifier": OUR_CLIENT_ID },
       );
       console.log("[Shutdown] Stopped transcode:", plexKey.substring(0, 8));
     } catch {}

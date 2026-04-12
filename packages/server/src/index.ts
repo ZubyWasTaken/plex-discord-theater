@@ -125,7 +125,10 @@ attachWebSocketServer(server);
 async function shutdown(signal: string) {
   console.log(`${signal} received, shutting down gracefully`);
   const { stopAllActiveSessions } = await import("./routes/plex.js");
-  await stopAllActiveSessions();
+  await Promise.race([
+    stopAllActiveSessions(),
+    new Promise<void>((resolve) => setTimeout(resolve, 8000)),
+  ]);
   // Close WebSocket connections first — server.close() won't complete while
   // WS connections are alive (they hold the underlying HTTP upgrade sockets open)
   closeWebSocketServer();

@@ -38,6 +38,7 @@ const countStmt = db.prepare("SELECT COUNT(*) as count FROM sessions");
 const deleteOldestStmt = db.prepare(
   "DELETE FROM sessions WHERE token IN (SELECT token FROM sessions ORDER BY created_at ASC LIMIT ?)"
 );
+const selectAllStmt = db.prepare("SELECT token, user_id, created_at FROM sessions");
 
 // Load existing valid sessions into cache on startup
 const validCutoff = Date.now() - SESSION_TTL_MS;
@@ -71,7 +72,7 @@ export function createSession(userId?: string): string {
     // Also evict from cache — re-query to get the tokens that were deleted
     // Since SQLite already deleted them, just rebuild cache from DB
     sessionCache.clear();
-    const remaining = db.prepare("SELECT token, user_id, created_at FROM sessions").all() as Array<{
+    const remaining = selectAllStmt.all() as Array<{
       token: string;
       user_id: string | null;
       created_at: number;

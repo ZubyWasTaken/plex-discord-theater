@@ -369,19 +369,15 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
   return (
     <div style={styles.container}>
-      {error && <div style={styles.error}>{error}</div>}
-
-      {syncState?.hostDisconnected && (
-        <div style={styles.hostDisconnected}>Host disconnected — waiting for reconnection...</div>
-      )}
-
-      {syncState?.authFailed && (
+      {syncState?.authFailed ? (
         <div style={styles.error}>Session expired — please close and restart the activity</div>
-      )}
-
-      {syncState?.reconnectFailed && (
+      ) : syncState?.reconnectFailed ? (
         <div style={styles.error}>Connection lost — please close and restart the activity</div>
-      )}
+      ) : error ? (
+        <div style={styles.error}>{error}</div>
+      ) : syncState?.hostDisconnected ? (
+        <div style={styles.hostDisconnected}>Host disconnected — waiting for reconnection...</div>
+      ) : null}
 
       <video
         ref={videoRef}

@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { Server } from "http";
 import { isValidSession, getSessionUserId } from "../middleware/auth.js";
-import { instanceHosts } from "../routes/discord.js";
+import { instanceHosts, updateInstanceHost } from "../routes/discord.js";
 import { plexFetch } from "./plex.js";
 import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped, isSessionStopping, markSessionStopping, clearSessionStopping, terminatePlexSession, pingPlexTranscode } from "../routes/plex.js";
 import { createTracker, handleTrackerSocket, destroyTracker } from "./tracker.js";
@@ -388,6 +388,7 @@ export function attachWebSocketServer(server: Server): void {
           if (instance) {
             instance.hostUserId = newHost.userId;
           }
+          updateInstanceHost(roomId, newHost.userId);
 
           console.log("[Sync] Host left, promoting", newHost.userId.substring(0, 8), "to host");
 
