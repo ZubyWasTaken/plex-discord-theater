@@ -43,6 +43,24 @@ export async function plexFetch(
   }
 }
 
+const PLEX_SEGMENT_TIMEOUT_MS = 8_000;
+
+export async function plexFetchSegment(
+  path: string,
+  params?: Record<string, string>,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PLEX_SEGMENT_TIMEOUT_MS);
+  try {
+    return await fetch(plexUrl(path, params), {
+      headers: PLEX_HEADERS,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function plexJSON<T = unknown>(
   path: string,
   params?: Record<string, string>,

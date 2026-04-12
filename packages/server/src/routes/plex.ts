@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { plexFetch, plexJSON, plexUrl } from "../services/plex.js";
+import { plexFetch, plexFetchSegment, plexJSON, plexUrl } from "../services/plex.js";
 import * as thumbCache from "../services/thumb-cache.js";
 
 const router = Router();
@@ -898,7 +898,7 @@ router.get("/hls/seg", async (req: Request, res: Response) => {
   if (DEBUG) console.log("[HLS seg] Fetching:", segPath.substring(0, 120));
 
   try {
-    const plexRes = await plexFetch(segPath);
+    const plexRes = await plexFetchSegment(segPath);
 
     if (!plexRes.ok) {
       // Drain the body so the underlying TCP connection is returned to the pool
