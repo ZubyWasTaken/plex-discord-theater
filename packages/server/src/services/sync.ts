@@ -26,7 +26,7 @@ async function killPlexTranscode(hlsSessionId: string | null): Promise<void> {
   try {
     const res = await plexFetch(
       "/video/:/transcode/universal/stop",
-      { session: stopKey },
+      { transcodeSessionId: stopKey },
       {
         "X-Plex-Session-Identifier": stopKey,
         "X-Plex-Client-Identifier": clientId,

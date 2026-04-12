@@ -531,6 +531,7 @@ export async function notifyPlexStopped(ratingKey: string | null, sessionId: str
         "X-Plex-Session-Identifier": sessionId,
         "X-Plex-Client-Identifier": OUR_CLIENT_ID,
       },
+      "POST",
     );
     console.log("[HLS] Timeline stopped for session:", sessionId.substring(0, 8),
       "ratingKey:", effectiveRatingKey, "→", res.status);
@@ -580,7 +581,7 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
         try {
           await plexFetch(
             "/video/:/transcode/universal/stop",
-            { session: key },
+            { transcodeSessionId: key },
             {
               "X-Plex-Session-Identifier": key,
               "X-Plex-Client-Identifier": OUR_CLIENT_ID,
@@ -597,7 +598,7 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
           try {
             await plexFetch(
               "/video/:/transcode/universal/stop",
-              { session: sessionKey },
+              { transcodeSessionId: sessionKey },
               {
                 "X-Plex-Session-Identifier": sessionKey,
                 "X-Plex-Client-Identifier": OUR_CLIENT_ID,
@@ -635,7 +636,7 @@ async function flushStaleTranscodes(ratingKey?: string): Promise<number> {
         try {
           await plexFetch(
             "/video/:/transcode/universal/stop",
-            { session: t.key },
+            { transcodeSessionId: t.key },
             {
               "X-Plex-Session-Identifier": t.key,
               "X-Plex-Client-Identifier": OUR_CLIENT_ID,
@@ -733,9 +734,12 @@ router.get(
         directPlay: "0",
         directStream: "0",
         directStreamAudio: "1",
-        videoResolution: "1920x1080",
-        maxVideoBitrate: "8000",
-        videoQuality: "100",
+        videoResolution: "1280x720",
+        videoBitrate: "4000",
+        peakBitrate: "8000",
+        videoQuality: "99",
+        autoAdjustQuality: "1",
+        location: "wan",
         mediaBufferSize: "102400",
         subtitles: subtitleMode,
       };
@@ -760,7 +764,7 @@ router.get(
       // state from a previous session (even though the transcode itself was stopped).
       const decisionPath = "/video/:/transcode/universal/decision";
       try {
-        const decisionRes = await plexFetch(decisionPath, { ...params, session: sessionId }, hlsHeaders);
+        const decisionRes = await plexFetch(decisionPath, { ...params, transcodeSessionId: sessionId }, hlsHeaders);
         // Log the decision body — contains generalDecisionCode that tells us
         // whether Plex will direct play (1000), transcode (1001), or error (2xxx/4xxx)
         try {
@@ -780,7 +784,7 @@ router.get(
       }
 
       // Pass session as both a query param and header (matching plex-mpv-shim behavior)
-      const startParams = { ...params, session: sessionId };
+      const startParams = { ...params, transcodeSessionId: sessionId };
       const hlsPath = "/video/:/transcode/universal/start.m3u8";
       let plexRes = await plexFetch(hlsPath, startParams, hlsHeaders);
 
@@ -807,7 +811,7 @@ router.get(
           }
           // Re-prime decision before retry
           try {
-            const retryDecision = await plexFetch(decisionPath, { ...params, session: sessionId }, hlsHeaders);
+            const retryDecision = await plexFetch(decisionPath, { ...params, transcodeSessionId: sessionId }, hlsHeaders);
             console.log("[HLS] Retry decision:", retryDecision.status);
           } catch {}
           plexRes = await plexFetch(hlsPath, startParams, hlsHeaders);
@@ -961,7 +965,7 @@ router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
     const plexKey = plexTranscodeKeys.get(sessionId) ?? sessionId;
     await plexFetch(
       "/video/:/transcode/universal/ping",
-      { session: plexKey },
+      { transcodeSessionId: plexKey },
       {
         "X-Plex-Session-Identifier": plexKey,
         "X-Plex-Client-Identifier": getSessionClientId(sessionId),
@@ -999,7 +1003,7 @@ router.delete(
       try {
         const stopRes = await plexFetch(
           "/video/:/transcode/universal/stop",
-          { session: plexKey },
+          { transcodeSessionId: plexKey },
           {
             "X-Plex-Session-Identifier": plexKey,
             "X-Plex-Client-Identifier": OUR_CLIENT_ID,
@@ -1064,7 +1068,7 @@ router.delete("/hls/sessions", async (req: Request, res: Response) => {
       const key = s.TranscodeSession?.key;
       if (key) {
         try {
-          const stopRes = await plexFetch(`/video/:/transcode/universal/stop`, { session: key }, {
+          const stopRes = await plexFetch(`/video/:/transcode/universal/stop`, { transcodeSessionId: key }, {
             "X-Plex-Session-Identifier": key,
             "X-Plex-Client-Identifier": OUR_CLIENT_ID,
           });
@@ -1209,7 +1213,7 @@ export async function stopAllActiveSessions(): Promise<void> {
     try {
       await plexFetch(
         "/video/:/transcode/universal/stop",
-        { session: plexKey },
+        { transcodeSessionId: plexKey },
         { "X-Plex-Client-Identifier": OUR_CLIENT_ID },
       );
       console.log("[Shutdown] Stopped transcode:", plexKey.substring(0, 8));
