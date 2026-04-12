@@ -827,7 +827,7 @@ router.get(
         directPlay: "0",
         directStream: "0",
         directStreamAudio: "1",
-        videoResolution: "1280x720",
+        videoResolution: "1920x1080",
         videoBitrate: "4000",
         peakBitrate: "8000",
         videoQuality: "99",
