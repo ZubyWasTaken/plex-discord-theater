@@ -3,7 +3,7 @@ import type { Server } from "http";
 import { isValidSession, getSessionUserId } from "../middleware/auth.js";
 import { instanceHosts } from "../routes/discord.js";
 import { plexFetch } from "./plex.js";
-import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped } from "../routes/plex.js";
+import { getPlexTranscodeKey, getSessionClientId, getSessionRatingKey, markTranscodeStopped, notifyPlexStopped, isSessionStopping, markSessionStopping, clearSessionStopping, terminatePlexSession } from "../routes/plex.js";
 import { createTracker, handleTrackerSocket, destroyTracker } from "./tracker.js";
 
 /** Interval between WebSocket pings to detect dead connections. */
@@ -17,36 +17,43 @@ const WS_PING_INTERVAL_MS = 30_000;
 async function killPlexTranscode(hlsSessionId: string | null): Promise<void> {
   if (!hlsSessionId) return;
 
-  const plexKey = getPlexTranscodeKey(hlsSessionId);
-  const clientId = getSessionClientId(hlsSessionId);
-  const ratingKey = getSessionRatingKey(hlsSessionId) || null;
-  const stopKey = plexKey || hlsSessionId;
-
-  // Stop the Plex transcode FIRST, then clear the mapping.
-  try {
-    const res = await plexFetch(
-      "/video/:/transcode/universal/stop",
-      { transcodeSessionId: stopKey },
-      {
-        "X-Plex-Session-Identifier": stopKey,
-        "X-Plex-Client-Identifier": clientId,
-      },
-    );
-    console.log("[Sync] Stop transcode", stopKey.substring(0, 8),
-      plexKey ? "(mapped plex key)" : "(our UUID, no mapping)",
-      "→", res.status);
-  } catch (err) {
-    console.error("[Sync] Stop transcode error:", err);
+  if (isSessionStopping(hlsSessionId)) {
+    console.log("[Sync] Stop skipped for", hlsSessionId.substring(0, 8), "(already stopping via HTTP)");
+    return;
   }
 
-  // Now clear the mapping and block segment proxy
-  markTranscodeStopped(hlsSessionId);
+  markSessionStopping(hlsSessionId);
 
-  // Notify Plex that playback stopped so it clears per-client state.
-  // Await this — if it's fire-and-forget, a new start can race ahead
-  // before Plex processes the timeline update, causing 400.
-  // Pass the ratingKey captured BEFORE markTranscodeStopped cleared it.
-  await notifyPlexStopped(ratingKey, hlsSessionId);
+  try {
+    const plexKey = getPlexTranscodeKey(hlsSessionId);
+    const clientId = getSessionClientId(hlsSessionId);
+    const ratingKey = getSessionRatingKey(hlsSessionId) || null;
+    const stopKey = plexKey || hlsSessionId;
+
+    try {
+      const res = await plexFetch(
+        "/video/:/transcode/universal/stop",
+        { transcodeSessionId: stopKey },
+        {
+          "X-Plex-Session-Identifier": stopKey,
+          "X-Plex-Client-Identifier": clientId,
+        },
+      );
+      console.log("[Sync] Stop transcode", stopKey.substring(0, 8),
+        plexKey ? "(mapped plex key)" : "(our UUID, no mapping)",
+        "→", res.status);
+    } catch (err) {
+      console.error("[Sync] Stop transcode error:", err);
+    }
+
+    markTranscodeStopped(hlsSessionId);
+    await notifyPlexStopped(ratingKey, hlsSessionId);
+    if (plexKey) {
+      await terminatePlexSession(plexKey);
+    }
+  } finally {
+    clearSessionStopping(hlsSessionId);
+  }
 }
 
 interface RoomClient {
