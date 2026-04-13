@@ -33,6 +33,11 @@ const PLEX_URL_REGEX = new RegExp(escapeRegExp(plexBase) + "(/[^\\s]{1,500})", "
 const RELATIVE_URL_REGEX = /^(?!#)(?!https?:\/\/)(?!\/api\/plex\/)(.{1,500}\.(?:m3u8|ts).{0,200})$/gm;
 const PLEX_TOKEN_REGEX = /[?&]X-Plex-Token=[^&\s]*/g;
 
+// VPS relay config — when set, HLS segment URLs point to the VPS
+// instead of proxying through this Express server.
+const VPS_RELAY_URL = process.env.VPS_RELAY_URL?.replace(/\/$/, "");
+const VPS_RELAY_KEY = process.env.VPS_RELAY_KEY;
+
 // ─── Types ──────────────────────────────────────────────────────
 
 interface PlexDirectory {
@@ -82,6 +87,16 @@ interface PlexMetadataItem {
 }
 
 // ─── Library browsing ────────────────────────────────────────────
+
+/**
+ * GET /api/plex/config
+ * Returns client-facing configuration (VPS relay status, etc.)
+ */
+router.get("/config", (_req: Request, res: Response) => {
+  res.json({
+    vpsRelay: !!(VPS_RELAY_URL && VPS_RELAY_KEY),
+  });
+});
 
 /**
  * GET /api/plex/sections
@@ -1262,6 +1277,16 @@ function isAllowedThumbPath(p: string): boolean {
 const TRANSCODE_PREFIX = "/video/:/transcode/universal/";
 
 function segProxyUrl(plexPath: string, authToken?: string): string {
+  if (VPS_RELAY_URL && VPS_RELAY_KEY) {
+    // Path-based: /seg/video/:/transcode/...?key=SECRET
+    // No encodeURIComponent — Plex paths go directly into the URL path.
+    // The key is a query param so nginx validates it, and hls.js sends it
+    // automatically (no additional xhrSetup needed for the key itself).
+    // Note: authToken is NOT appended in VPS mode — segments are authenticated
+    // via ?key= only, and leaking the app session token cross-origin is unnecessary.
+    return `${VPS_RELAY_URL}/seg${plexPath}?key=${encodeURIComponent(VPS_RELAY_KEY)}`;
+  }
+  // No VPS — fall back to proxying through Express (query-param based)
   let url = `/api/plex/hls/seg?p=${encodeURIComponent(plexPath)}`;
   if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
   return url;
