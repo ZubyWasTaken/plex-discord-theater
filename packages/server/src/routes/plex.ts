@@ -1285,7 +1285,10 @@ function segProxyUrl(plexPath: string, authToken?: string): string {
     // the VPS URL, dropping the ?key= query param (RFC 3986) → nginx 403.
     // Sub-manifests are ~2KB so routing them through Express has negligible
     // bandwidth impact.
-    return `${VPS_RELAY_URL}/seg${plexPath}?key=${encodeURIComponent(VPS_RELAY_KEY)}`;
+    // Use relative path (/theater/seg/...) so requests go through Discord's
+    // Activity proxy (which forwards to theater.zuby.website via URL Mapping).
+    // Absolute URLs to the VPS would be blocked by Discord's iframe CSP.
+    return `/theater/seg${plexPath}?key=${encodeURIComponent(VPS_RELAY_KEY)}`;
   }
   // No VPS, or sub-manifest — proxy through Express
   let url = `/api/plex/hls/seg?p=${encodeURIComponent(plexPath)}`;
