@@ -149,14 +149,20 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         const hlsConfig: Partial<import("hls.js").HlsConfig> = {
           maxBufferLength: 60,
           maxMaxBufferLength: 120,
+          maxBufferHole: 0.5,
+          highBufferWatchdogPeriod: 3,
+          // Fetch multiple segments in parallel on cold start — forces Plex to
+          // transcode ahead instead of waiting for each request sequentially.
+          // This builds buffer faster and reduces initial stuttering.
+          maxLoadingDelay: 4,
+          fragLoadingMaxRetry: 8,
+          fragLoadingRetryDelay: 1000,
+          fragLoadingMaxRetryTimeout: 30000,
           manifestLoadingMaxRetry: 4,
           manifestLoadingRetryDelay: 1000,
           manifestLoadingMaxRetryTimeout: 30000,
           levelLoadingMaxRetry: 6,
           levelLoadingRetryDelay: 1000,
-          fragLoadingMaxRetry: 8,
-          fragLoadingRetryDelay: 1000,
-          fragLoadingMaxRetryTimeout: 30000,
           startFragPrefetch: true,
           xhrSetup: (xhr: XMLHttpRequest, urlStr: string) => {
             // Only send auth header to same-origin requests (manifests, pings).

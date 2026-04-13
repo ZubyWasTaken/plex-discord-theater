@@ -848,7 +848,7 @@ router.get(
         videoQuality: "99",
         autoAdjustQuality: "1",
         location: "wan",
-        mediaBufferSize: "102400",
+        mediaBufferSize: "409600",
         subtitles: subtitleMode,
       };
       if (offset) params.offset = offset;
