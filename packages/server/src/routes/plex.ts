@@ -1277,16 +1277,17 @@ function isAllowedThumbPath(p: string): boolean {
 const TRANSCODE_PREFIX = "/video/:/transcode/universal/";
 
 function segProxyUrl(plexPath: string, authToken?: string): string {
-  if (VPS_RELAY_URL && VPS_RELAY_KEY) {
-    // Path-based: /seg/video/:/transcode/...?key=SECRET
-    // No encodeURIComponent — Plex paths go directly into the URL path.
-    // The key is a query param so nginx validates it, and hls.js sends it
-    // automatically (no additional xhrSetup needed for the key itself).
-    // Note: authToken is NOT appended in VPS mode — segments are authenticated
-    // via ?key= only, and leaking the app session token cross-origin is unnecessary.
+  if (VPS_RELAY_URL && VPS_RELAY_KEY && !plexPath.endsWith(".m3u8")) {
+    // VPS mode: only route .ts segments through VPS, NOT sub-manifests.
+    // Sub-manifests (.m3u8) must stay on Express so rewriteManifestUrls() can
+    // rewrite their bare filenames (e.g. "00000.ts") into full proxied URLs.
+    // If sub-manifests went to VPS, hls.js would resolve "00000.ts" relative to
+    // the VPS URL, dropping the ?key= query param (RFC 3986) → nginx 403.
+    // Sub-manifests are ~2KB so routing them through Express has negligible
+    // bandwidth impact.
     return `${VPS_RELAY_URL}/seg${plexPath}?key=${encodeURIComponent(VPS_RELAY_KEY)}`;
   }
-  // No VPS — fall back to proxying through Express (query-param based)
+  // No VPS, or sub-manifest — proxy through Express
   let url = `/api/plex/hls/seg?p=${encodeURIComponent(plexPath)}`;
   if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
   return url;

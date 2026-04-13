@@ -103,7 +103,10 @@ server {
     # Path-based approach avoids URL encoding issues with Plex's
     # special characters (like :/ in transcode paths).
 
-    location /seg/ {
+    # Only proxy transcode segment paths — not arbitrary Plex API endpoints.
+    # This prevents authenticated users from using the VPS key to access
+    # other Plex endpoints (e.g. /library/sections) through the relay.
+    location /seg/video/:/transcode/ {
         # ── Auth: validate shared secret in query param ──
         # segProxyUrl() appends ?key=SECRET to every segment URL,
         # so no client-side xhrSetup is needed — hls.js just uses the URLs as-is.
@@ -120,14 +123,14 @@ server {
         }
 
         # ── Proxy to home Plex server ──
-        # The trailing / on both location and proxy_pass makes nginx strip /seg/
-        # and forward the rest of the path to Plex.
+        # The trailing / on location and proxy_pass makes nginx strip the
+        # location prefix and forward the rest of the path to Plex.
         # Example: /seg/video/:/transcode/... → GET /video/:/transcode/... on Plex
         #
         # Strip query params (?key=...) so they aren't forwarded to Plex.
         # Plex ignores unknown params, but there's no reason to send our auth key upstream.
         set $args "";
-        proxy_pass https://YOUR_HOME_PUBLIC_IP:32400/;
+        proxy_pass https://YOUR_HOME_PUBLIC_IP:32400/video/:/transcode/;
         proxy_ssl_verify off;
 
         # Auth to Plex (stays server-side, never exposed to clients)

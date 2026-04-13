@@ -183,7 +183,7 @@ If your home upload is 100 Mb/s and you're running a watch party with 10 viewers
        ssl_certificate /etc/letsencrypt/live/theater.yourdomain.com/fullchain.pem;
        ssl_certificate_key /etc/letsencrypt/live/theater.yourdomain.com/privkey.pem;
 
-       location /seg/ {
+       location /seg/video/:/transcode/ {
            if ($arg_key != "YOUR_SECRET_KEY") {
                return 403;
            }
@@ -195,7 +195,7 @@ If your home upload is 100 Mb/s and you're running a watch party with 10 viewers
            }
 
            set $args "";
-           proxy_pass https://YOUR_HOME_PUBLIC_IP:32400/;
+           proxy_pass https://YOUR_HOME_PUBLIC_IP:32400/video/:/transcode/;
            proxy_ssl_verify off;
            proxy_set_header X-Plex-Token YOUR_PLEX_TOKEN;
            proxy_set_header X-Plex-Client-Identifier plex-discord-theater;
