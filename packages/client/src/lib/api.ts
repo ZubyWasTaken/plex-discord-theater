@@ -181,3 +181,11 @@ export async function pingSession(sessionId: string): Promise<void> {
 export function stopSession(sessionId: string): Promise<void> {
   return apiDelete(`/api/plex/hls/session/${encodeURIComponent(sessionId)}`);
 }
+
+export interface AppConfig {
+  vpsRelay: boolean;
+}
+
+export function fetchConfig(): Promise<AppConfig> {
+  return apiGet("/api/plex/config");
+}
