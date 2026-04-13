@@ -235,7 +235,30 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
             }
           }
 
-          video.play().catch((err) => console.warn("Autoplay prevented:", err));
+          // Wait for enough buffer before starting playback to avoid cold-start
+          // stuttering. Plex transcodes at ~1x speed initially, so starting
+          // immediately causes stuttering until the transcoder gets ahead.
+          // Wait for 15s of buffer (or 10s timeout) before hitting play.
+          const tryPlay = () => {
+            if (!mounted) return;
+            const buffered = video.buffered;
+            const bufferedSecs = buffered.length > 0
+              ? buffered.end(buffered.length - 1) - video.currentTime
+              : 0;
+            if (bufferedSecs >= 15) {
+              video.play().catch((err) => console.warn("Autoplay prevented:", err));
+            } else {
+              setTimeout(tryPlay, 500);
+            }
+          };
+          // Start checking immediately, with a fallback timeout to play
+          // even with less buffer (don't wait forever)
+          tryPlay();
+          setTimeout(() => {
+            if (mounted && video.paused) {
+              video.play().catch((err) => console.warn("Autoplay prevented:", err));
+            }
+          }, 10000);
 
           // Host: broadcast play with sessionId when manifest is ready
           if (isHostRef.current) {
