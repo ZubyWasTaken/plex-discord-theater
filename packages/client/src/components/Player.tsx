@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import Hls from "hls.js";
 import { HlsJsP2PEngine } from "p2p-media-loader-hlsjs";
 import { Controls } from "./Controls";
-import { hlsMasterUrl, pingSession, stopSession, getSessionToken } from "../lib/api";
+import { hlsMasterUrl, pingSession, stopSession, getSessionToken, fetchConfig } from "../lib/api";
 import type { PlexItem } from "../lib/api";
 import type { SyncState, SyncActions } from "../hooks/useSync";
 
@@ -30,6 +30,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const sessionIdRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [vpsRelay, setVpsRelay] = useState<boolean | null>(null); // null = not yet loaded
   const retryCountRef = useRef(0);
   const hlsDeadRef = useRef(false);
   const networkRetryRef = useRef(0);
@@ -99,6 +100,13 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     }
   }, []);
 
+  // Fetch VPS relay config once on mount — HLS init waits for this
+  useEffect(() => {
+    fetchConfig()
+      .then((config) => setVpsRelay(config.vpsRelay))
+      .catch(() => setVpsRelay(false)); // default to non-VPS (P2P mode) if config fails
+  }, []);
+
   // Single HLS session — no mid-stream switching
   useEffect(() => {
     let mounted = true;
@@ -128,13 +136,17 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         await new Promise(r => setTimeout(r, 500));
       }
 
+      // Wait for VPS config before initializing HLS — prevents double-start
+      // (P2P init on false default, then teardown+re-init when config arrives)
+      if (vpsRelay === null) return;
+
       const video = videoRef.current;
       if (!mounted || !video) return;
 
       if (Hls.isSupported()) {
         const token = getSessionToken();
-        const HlsWithP2P = HlsJsP2PEngine.injectMixin(Hls);
-        const hls = new HlsWithP2P({
+
+        const hlsConfig: Partial<import("hls.js").HlsConfig> = {
           maxBufferLength: 30,
           maxMaxBufferLength: 60,
           manifestLoadingMaxRetry: 4,
@@ -146,52 +158,63 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           fragLoadingRetryDelay: 1000,
           fragLoadingMaxRetryTimeout: 30000,
           startFragPrefetch: true,
-          xhrSetup: (xhr: XMLHttpRequest, _urlStr: string) => {
-            if (token) {
+          xhrSetup: (xhr: XMLHttpRequest, urlStr: string) => {
+            // Only send auth header to same-origin requests (manifests, pings).
+            // VPS segment URLs are absolute (https://vps/seg/...) and authenticated
+            // via ?key= query param. Sending Authorization to a cross-origin URL
+            // triggers a CORS preflight that nginx's ?key= check would reject.
+            const isSameOrigin = urlStr.startsWith("/") || urlStr.startsWith(location.origin);
+            if (token && isSameOrigin) {
               xhr.setRequestHeader("Authorization", `Bearer ${token}`);
             }
           },
-          p2p: {
-            core: {
-              // All viewers in the same watch session share the same swarmId,
-              // so they discover each other and exchange HLS segments via WebRTC
-              swarmId: `pdt-${sessionId}`,
-              // Use self-hosted tracker on same origin to bypass Discord CSP
-              announceTrackers: [
-                `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/tracker${token ? `?token=${encodeURIComponent(token)}` : ""}`,
-              ],
-              // Seconds of content that must be available via HTTP
-              highDemandTimeWindow: 15,
-              // Seconds of content to prefetch via P2P
-              p2pDownloadTimeWindow: 30,
-              // Seconds of content to prefetch via HTTP
-              httpDownloadTimeWindow: 6,
-              // Concurrent P2P and HTTP segment downloads
-              simultaneousP2PDownloads: 3,
-              simultaneousHttpDownloads: 2,
-              rtcConfig: {
-                iceServers: [
-                  { urls: "stun:stun.l.google.com:19302" },
+        };
+
+        let hls: Hls;
+
+        if (!vpsRelay) {
+          // P2P mode — peers share segments via WebRTC
+          const HlsWithP2P = HlsJsP2PEngine.injectMixin(Hls);
+          hls = new HlsWithP2P({
+            ...hlsConfig,
+            p2p: {
+              core: {
+                swarmId: `pdt-${sessionId}`,
+                announceTrackers: [
+                  `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/tracker${token ? `?token=${encodeURIComponent(token)}` : ""}`,
                 ],
+                highDemandTimeWindow: 15,
+                p2pDownloadTimeWindow: 30,
+                httpDownloadTimeWindow: 6,
+                simultaneousP2PDownloads: 3,
+                simultaneousHttpDownloads: 2,
+                rtcConfig: {
+                  iceServers: [
+                    { urls: "stun:stun.l.google.com:19302" },
+                  ],
+                },
+                httpRequestSetup: async (url, _byteRange, signal, requestByteRange) => {
+                  const headers: Record<string, string> = {};
+                  if (token) headers["Authorization"] = `Bearer ${token}`;
+                  if (requestByteRange) {
+                    const end = requestByteRange.end != null ? requestByteRange.end : "";
+                    headers["Range"] = `bytes=${requestByteRange.start}-${end}`;
+                  }
+                  return new Request(url, { headers, signal });
+                },
               },
-              // Inject auth header for p2p-media-loader's fetch() calls
-              httpRequestSetup: async (url, _byteRange, signal, requestByteRange) => {
-                const headers: Record<string, string> = {};
-                if (token) headers["Authorization"] = `Bearer ${token}`;
-                if (requestByteRange) {
-                  const end = requestByteRange.end != null ? requestByteRange.end : "";
-                  headers["Range"] = `bytes=${requestByteRange.start}-${end}`;
-                }
-                return new Request(url, { headers, signal });
+              onHlsJsCreated: (hls) => {
+                hls.p2pEngine.addEventListener("onTrackerError", ({ error }) => {
+                  console.error("[P2P] Tracker error:", error);
+                });
               },
             },
-            onHlsJsCreated: (hls) => {
-              hls.p2pEngine.addEventListener("onTrackerError", ({ error }) => {
-                console.error("[P2P] Tracker error:", error);
-              });
-            },
-          },
-        });
+          });
+        } else {
+          // VPS mode — segments come from VPS cache, no P2P needed
+          hls = new Hls(hlsConfig);
+        }
+
         hlsRef.current = hls;
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -302,7 +325,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         sessionIdRef.current = null;
       }
     };
-  }, [item.ratingKey, subtitles, destroyLocal, viewerHlsSessionId, retryKey]);
+  }, [item.ratingKey, subtitles, destroyLocal, viewerHlsSessionId, retryKey, vpsRelay]);
 
   // Viewer: respond to explicit host commands (play/pause/resume/seek)
   // Does NOT fire on heartbeats — both clients share the same HLS stream
