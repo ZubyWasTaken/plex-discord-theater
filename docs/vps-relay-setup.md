@@ -145,7 +145,7 @@ server {
         # nginx cannot cache responses when buffering is disabled.
         # Do NOT add "proxy_buffering off" here — it breaks caching entirely.
         proxy_cache hls;
-        proxy_cache_valid 200 10s;          # Cache successful responses for 10s
+        proxy_cache_valid 200 5m;           # Cache successful responses for 5 minutes
         proxy_cache_lock on;                # Only one request per segment to Plex
         proxy_cache_lock_age 10s;           # If lock holder is slow, let others through
         proxy_cache_lock_timeout 10s;       # Max wait for lock before fetching directly

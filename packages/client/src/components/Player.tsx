@@ -147,8 +147,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         const token = getSessionToken();
 
         const hlsConfig: Partial<import("hls.js").HlsConfig> = {
-          maxBufferLength: 30,
-          maxMaxBufferLength: 60,
+          maxBufferLength: 60,
+          maxMaxBufferLength: 120,
           manifestLoadingMaxRetry: 4,
           manifestLoadingRetryDelay: 1000,
           manifestLoadingMaxRetryTimeout: 30000,
