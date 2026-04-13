@@ -150,11 +150,11 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           maxBufferLength: 60,
           maxMaxBufferLength: 120,
           maxBufferHole: 0.5,
-          highBufferWatchdogPeriod: 3,
-          // Fetch multiple segments in parallel on cold start — forces Plex to
-          // transcode ahead instead of waiting for each request sequentially.
-          // This builds buffer faster and reduces initial stuttering.
-          maxLoadingDelay: 4,
+          // Recover from stalls faster on cold start — default is 2s, but during
+          // initial Plex transcode warm-up segments arrive slowly. A lower nudge
+          // threshold helps skip past gaps sooner.
+          highBufferWatchdogPeriod: 1,
+          nudgeMaxRetry: 10,
           fragLoadingMaxRetry: 8,
           fragLoadingRetryDelay: 1000,
           fragLoadingMaxRetryTimeout: 30000,

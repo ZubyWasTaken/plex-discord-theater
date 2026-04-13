@@ -848,7 +848,12 @@ router.get(
         videoQuality: "99",
         autoAdjustQuality: "1",
         location: "wan",
-        mediaBufferSize: "409600",
+        mediaBufferSize: "102400",
+        // Shorter segments transcode faster individually, so Plex can start
+        // delivering them sooner on cold start. At 3s segments, Plex only needs
+        // to transcode ~3s of video before the first segment is ready (vs ~6s
+        // with the default). Trade-off: more HTTP requests, but each is smaller.
+        secondsPerSegment: "3",
         subtitles: subtitleMode,
       };
       if (offset) params.offset = offset;
