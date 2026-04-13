@@ -32,6 +32,9 @@ const app = express();
 app.set("trust proxy", 1);
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
+// VPS relay origin for CSP — allow browser to fetch segments from VPS
+const vpsRelayOrigin = process.env.VPS_RELAY_URL?.replace(/\/$/, "");
+
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -40,9 +43,9 @@ app.use(
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
-        mediaSrc: ["'self'"],
+        mediaSrc: ["'self'", ...(vpsRelayOrigin ? [vpsRelayOrigin] : [])],
         imgSrc: ["'self'"],
-        connectSrc: ["'self'", "https://discord.com", "https://*.discord.com", "https://*.discordsays.com", "wss://*.discord.gg", "wss://*.discordsays.com", "wss:", "ws:"],
+        connectSrc: ["'self'", "https://discord.com", "https://*.discord.com", "https://*.discordsays.com", "wss://*.discord.gg", "wss://*.discordsays.com", "wss:", "ws:", ...(vpsRelayOrigin ? [vpsRelayOrigin] : [])],
         // Discord embeds Activities in an iframe from *.discordsays.com —
         // frame-ancestors must allow it or the browser blocks the embed
         frameAncestors: ["'self'", "https://discord.com", "https://*.discord.com", "https://*.discordsays.com"],
