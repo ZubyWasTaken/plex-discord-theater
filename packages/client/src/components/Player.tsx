@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import Hls from "hls.js";
 import { HlsJsP2PEngine } from "p2p-media-loader-hlsjs";
 import { Controls } from "./Controls";
-import { hlsMasterUrl, pingSession, stopSession, getSessionToken, fetchConfig } from "../lib/api";
+import { TrackSwitcher } from "./TrackSwitcher";
+import { hlsMasterUrl, pingSession, stopSession, getSessionToken, fetchConfig, setStreams } from "../lib/api";
 import type { PlexItem } from "../lib/api";
 import type { SyncState, SyncActions } from "../hooks/useSync";
 
@@ -31,6 +32,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [vpsRelay, setVpsRelay] = useState<boolean | null>(null); // null = not yet loaded
+  const [buffering, setBuffering] = useState(true);
+  const [showTrackSwitcher, setShowTrackSwitcher] = useState(false);
   const retryCountRef = useRef(0);
   const hlsDeadRef = useRef(false);
   const networkRetryRef = useRef(0);
@@ -249,6 +252,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         hls.on(Hls.Events.FRAG_LOADED, () => {
           if (mounted) {
             setError(null);
+            setBuffering(false);
             retryCountRef.current = 0;
             networkRetryRef.current = 0;
             hlsDeadRef.current = false;
@@ -284,6 +288,11 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
         hls.loadSource(url);
         hls.attachMedia(video);
+
+        // Buffering indicator events
+        video.addEventListener("waiting", () => { if (!video.paused) setBuffering(true); });
+        video.addEventListener("playing", () => setBuffering(false));
+        video.addEventListener("seeked", () => { if (!video.paused) setBuffering(false); });
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         const token = getSessionToken();
         const sep = url.includes("?") ? "&" : "?";
@@ -391,6 +400,65 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     }
   }, [syncState?.position]);
 
+  // Keyboard shortcuts
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          if (!isHostRef.current) return;
+          if (video.paused) {
+            video.play();
+            syncActionsRef.current?.sendResume(video.currentTime);
+          } else {
+            video.pause();
+            syncActionsRef.current?.sendPause(video.currentTime);
+          }
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          if (!isHostRef.current) return;
+          { const t = Math.max(0, video.currentTime - 10);
+            video.currentTime = t;
+            syncActionsRef.current?.sendSeek(t);
+          }
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          if (!isHostRef.current) return;
+          { const t = Math.min(video.duration || 0, video.currentTime + 10);
+            video.currentTime = t;
+            syncActionsRef.current?.sendSeek(t);
+          }
+          break;
+        case "m":
+        case "M":
+          e.preventDefault();
+          if (video.volume > 0) {
+            (video as any).__prevVolume = video.volume;
+            video.volume = 0;
+          } else {
+            video.volume = (video as any).__prevVolume ?? 1;
+          }
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          video.volume = Math.min(1, video.volume + 0.1);
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          video.volume = Math.max(0, video.volume - 0.1);
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const handleBack = useCallback(() => {
     destroyLocal();
     // Only the session owner stops the Plex transcode
@@ -404,6 +472,20 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     onBack();
   }, [destroyLocal, onBack]);
 
+  const handleTrackChange = useCallback(async (partId: number, audioStreamID?: number, subtitleStreamID?: number) => {
+    if (!sessionIdRef.current) return;
+    try {
+      await setStreams(partId, { audioStreamID, subtitleStreamID });
+    } catch (err) {
+      console.error("Failed to set streams:", err);
+      return;
+    }
+    // Restart HLS session to apply new tracks
+    // TODO: Preserve position by passing offset to hlsMasterUrl
+    setShowTrackSwitcher(false);
+    setRetryKey((k) => k + 1);
+  }, []);
+
   return (
     <div style={styles.container}>
       {syncState?.authFailed ? (
@@ -415,6 +497,14 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
       ) : syncState?.hostDisconnected ? (
         <div style={styles.hostDisconnected}>Host disconnected — waiting for reconnection...</div>
       ) : null}
+
+      {/* Buffering indicator */}
+      {buffering && !error && (
+        <div style={styles.bufferingOverlay}>
+          <div style={styles.bufferingSpinner} />
+          <span style={styles.bufferingText}>Loading...</span>
+        </div>
+      )}
 
       <video
         ref={videoRef}
@@ -430,7 +520,15 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         onSyncPause={isHost ? syncActions?.sendPause : undefined}
         onSyncResume={isHost ? syncActions?.sendResume : undefined}
         onSyncSeek={isHost ? syncActions?.sendSeek : undefined}
+        onOpenTrackSwitcher={isHost ? () => setShowTrackSwitcher(true) : undefined}
       />
+      {showTrackSwitcher && (
+        <TrackSwitcher
+          ratingKey={item.ratingKey}
+          onClose={() => setShowTrackSwitcher(false)}
+          onTrackChange={handleTrackChange}
+        />
+      )}
     </div>
   );
 }
@@ -471,5 +569,30 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: "center",
     fontSize: "14px",
     zIndex: 20,
+  },
+  bufferingOverlay: {
+    position: "absolute",
+    inset: 0,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "rgba(0,0,0,0.4)",
+    zIndex: 5,
+    pointerEvents: "none",
+  },
+  bufferingSpinner: {
+    width: "48px",
+    height: "48px",
+    border: "3px solid rgba(229,160,13,0.3)",
+    borderTopColor: "#e5a00d",
+    borderRadius: "50%",
+    animation: "spin 1s linear infinite",
+  },
+  bufferingText: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: "13px",
+    fontWeight: 500,
+    marginTop: "14px",
   },
 };
