@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { plexFetch, plexFetchSegment, plexJSON, plexUrl } from "../services/plex.js";
+import { startPrefetch, stopPrefetch, getCachedSegment } from "../services/segment-prefetch.js";
 import * as thumbCache from "../services/thumb-cache.js";
 
 const router = Router();
@@ -537,6 +538,7 @@ setInterval(() => {
 
 /** Mark a Plex transcode key as stopped — segment requests will be rejected. */
 export function markTranscodeStopped(sessionId: string): void {
+  stopPrefetch(sessionId);
   const plexKey = plexTranscodeKeys.get(sessionId);
   if (plexKey) activeTranscodeKeys.delete(plexKey);
   plexTranscodeKeys.delete(sessionId);
@@ -949,6 +951,8 @@ router.get(
         activeTranscodeKeys.add(plexKeyMatch[1]);
         allKnownPlexKeys.set(plexKeyMatch[1], Date.now());
         console.log("[HLS] Plex transcode key:", plexKeyMatch[1].substring(0, 8), "for session:", sessionId.substring(0, 8));
+      // Start pre-fetching segments to absorb Plex's HTTP throttle
+      startPrefetch(sessionId, plexKeyMatch[1]);
       } else {
         console.error("[HLS] FATAL: Could not extract Plex transcode key from manifest for session:",
           sessionId.substring(0, 8), "— aborting session to prevent phantom state");
@@ -962,6 +966,27 @@ router.get(
         await notifyPlexStopped(ratingKey, sessionId);
         throw new Error("Could not extract Plex transcode key from manifest");
       }
+
+      // Send initial timeline "playing" at position 0 so Plex unthrottles delivery.
+      // Without this, Plex throttles segment HTTP delivery to ~1x because it has no
+      // playback position context. Subsequent pings update the position.
+      const duration = mediaDurations.get(ratingKey);
+      plexFetch(
+        "/:/timeline",
+        {
+          ratingKey,
+          key: `/library/metadata/${ratingKey}`,
+          state: "playing",
+          time: offset ? String(Math.round(parseFloat(offset) * 1000)) : "0",
+          duration: duration ? String(duration) : "0",
+          identifier: "com.plexapp.plugins.library",
+        },
+        {
+          "X-Plex-Session-Identifier": sessionId,
+          "X-Plex-Client-Identifier": OUR_CLIENT_ID,
+        },
+        "POST",
+      ).catch(() => {}); // fire-and-forget
 
       const authToken = req.query.token as string | undefined;
       const rewritten = rewriteManifestUrls(m3u8, authToken);
@@ -1019,6 +1044,21 @@ router.get("/hls/seg", async (req: Request, res: Response) => {
 
   if (DEBUG) console.log("[HLS seg] Fetching:", segPath.substring(0, 120));
 
+  // Check pre-fetch cache first — serves instantly if the segment was already fetched
+  const cachedSeg = getCachedSegment(segPath);
+  if (cachedSeg) {
+    if (segPath.endsWith(".ts")) {
+      res.setHeader("Content-Type", "video/MP2T");
+    } else if (segPath.endsWith(".m3u8")) {
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    } else {
+      res.setHeader("Content-Type", "application/octet-stream");
+    }
+    if (DEBUG) console.log("[HLS seg] Cache HIT:", segPath.substring(0, 80));
+    res.send(cachedSeg);
+    return;
+  }
+
   try {
     const plexRes = await plexFetchSegment(segPath);
 
@@ -1073,8 +1113,10 @@ router.get("/hls/seg", async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/plex/hls/ping/:sessionId
- * Keep a transcode session alive.
+ * GET /api/plex/hls/ping/:sessionId?time=<ms>
+ * Keep a transcode session alive and update Plex timeline with current position.
+ * Without timeline updates, Plex throttles segment delivery because it doesn't
+ * know the client's playback position and rate-limits to ~1x realtime.
  */
 router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
   const sessionId = req.params.sessionId as string;
@@ -1085,14 +1127,42 @@ router.get("/hls/ping/:sessionId", async (req: Request, res: Response) => {
 
   try {
     const plexKey = plexTranscodeKeys.get(sessionId) ?? sessionId;
+    const clientId = getSessionClientId(sessionId);
+
+    // Ping to keep transcode alive
     await plexFetch(
       "/video/:/transcode/universal/ping",
       { transcodeSessionId: plexKey },
       {
         "X-Plex-Session-Identifier": plexKey,
-        "X-Plex-Client-Identifier": getSessionClientId(sessionId),
+        "X-Plex-Client-Identifier": clientId,
       },
     );
+
+    // Send timeline update so Plex knows our playback position.
+    // Without this, Plex throttles HTTP segment delivery to ~1x realtime.
+    const timeMs = typeof req.query.time === "string" ? parseInt(req.query.time, 10) : NaN;
+    const ratingKey = sessionRatingKeys.get(sessionId);
+    if (ratingKey && Number.isFinite(timeMs)) {
+      const duration = mediaDurations.get(ratingKey);
+      plexFetch(
+        "/:/timeline",
+        {
+          ratingKey,
+          key: `/library/metadata/${ratingKey}`,
+          state: "playing",
+          time: String(timeMs),
+          duration: duration ? String(duration) : "0",
+          identifier: "com.plexapp.plugins.library",
+        },
+        {
+          "X-Plex-Session-Identifier": sessionId,
+          "X-Plex-Client-Identifier": clientId,
+        },
+        "POST",
+      ).catch(() => {}); // fire-and-forget — don't block the ping response
+    }
+
     res.json({ ok: true });
   } catch (err) {
     console.error("Ping error:", err);
