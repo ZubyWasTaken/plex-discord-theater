@@ -84,6 +84,8 @@ export interface PlexItem {
   parentTitle?: string;
   leafCount?: number;
   childCount?: number;
+  summary?: string;
+  duration?: number;
 }
 
 export interface PlexSection {

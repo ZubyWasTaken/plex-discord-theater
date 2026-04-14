@@ -1306,6 +1306,8 @@ function mapItem(m: PlexMetadataItem) {
     ...(m.parentTitle != null && { parentTitle: m.parentTitle }),
     ...(m.leafCount != null && { leafCount: m.leafCount }),
     ...(m.childCount != null && { childCount: m.childCount }),
+    ...(m.summary != null && { summary: m.summary }),
+    ...(m.duration != null && { duration: m.duration }),
   };
 }
 

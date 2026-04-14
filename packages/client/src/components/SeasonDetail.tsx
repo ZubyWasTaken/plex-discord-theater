@@ -17,9 +17,20 @@ function authUrl(url: string, w?: number, h?: number): string {
   return out;
 }
 
+function fmtDuration(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return h > 0
+    ? `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`
+    : `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDetailProps) {
   const [episodes, setEpisodes] = useState<PlexItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,7 +46,6 @@ export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDe
 
   return (
     <div style={styles.page}>
-      {/* Back button */}
       <button onClick={onBack} style={styles.backBtn}>
         <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
           <path d="M12.5 15L7.5 10L12.5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -43,7 +53,6 @@ export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDe
         Back
       </button>
 
-      {/* Breadcrumb */}
       <div style={styles.breadcrumb}>
         <span style={styles.breadcrumbShow}>{show.title}</span>
         <span style={styles.breadcrumbSep}>&rsaquo;</span>
@@ -58,33 +67,48 @@ export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDe
         <div style={styles.empty}>No episodes found</div>
       ) : (
         <div style={styles.list}>
-          {episodes.map((ep) => (
-            <button
-              key={ep.ratingKey}
-              onClick={() => onSelectEpisode(ep)}
-              style={styles.episodeRow}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-                e.currentTarget.style.borderColor = "rgba(229,160,13,0.3)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(255,255,255,0.02)";
-                e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
-              }}
-            >
-              {ep.thumb ? (
-                <img src={authUrl(ep.thumb, 320, 180)} alt="" style={styles.episodeThumb} loading="lazy" />
-              ) : (
-                <div style={styles.episodePlaceholder}>No Image</div>
-              )}
-              <div style={styles.episodeInfo}>
-                <div style={styles.episodeNumber}>
-                  Episode {ep.index ?? "?"}
+          {episodes.map((ep) => {
+            const isHovered = hoveredKey === ep.ratingKey;
+            return (
+              <button
+                key={ep.ratingKey}
+                onClick={() => onSelectEpisode(ep)}
+                onMouseEnter={() => setHoveredKey(ep.ratingKey)}
+                onMouseLeave={() => setHoveredKey(null)}
+                style={{
+                  ...styles.episodeCard,
+                  ...(isHovered ? styles.episodeCardHover : {}),
+                }}
+              >
+                <div style={styles.thumbWrap}>
+                  {ep.thumb ? (
+                    <img src={authUrl(ep.thumb, 400, 225)} alt="" style={styles.episodeThumb} loading="lazy" />
+                  ) : (
+                    <div style={styles.episodePlaceholder}>No Image</div>
+                  )}
+                  <div style={{ ...styles.playOverlay, opacity: isHovered ? 1 : 0 }}>
+                    <div style={styles.playCircle}>
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="#fff">
+                        <path d="M4 2.5L13 8L4 13.5V2.5Z"/>
+                      </svg>
+                    </div>
+                  </div>
+                  {ep.duration && (
+                    <div style={styles.durationBadge}>{fmtDuration(ep.duration)}</div>
+                  )}
                 </div>
-                <div style={styles.episodeTitle}>{ep.title}</div>
-              </div>
-            </button>
-          ))}
+                <div style={styles.episodeInfo}>
+                  <div style={styles.episodeMeta}>
+                    <span style={styles.episodeNumber}>E{ep.index ?? "?"}</span>
+                    <span style={styles.episodeTitle}>{ep.title}</span>
+                  </div>
+                  {ep.summary && (
+                    <p style={styles.episodeSummary}>{ep.summary}</p>
+                  )}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -92,128 +116,75 @@ export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDe
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  page: {
-    minHeight: "100vh",
-    background: "#0d0d0d",
-  },
+  page: { minHeight: "100vh", background: "#0d0d0d" },
   backBtn: {
-    display: "flex",
-    alignItems: "center",
-    gap: "6px",
-    margin: "16px 24px",
-    padding: "8px 16px",
-    borderRadius: "8px",
-    border: "1px solid rgba(255,255,255,0.1)",
-    background: "rgba(255,255,255,0.05)",
-    color: "#f0f0f0",
-    cursor: "pointer",
-    fontSize: "14px",
-    fontWeight: 500,
-    fontFamily: "inherit",
+    display: "flex", alignItems: "center", gap: "6px",
+    margin: "16px 24px", padding: "8px 16px", borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)",
+    color: "#f0f0f0", cursor: "pointer", fontSize: "14px", fontWeight: 500, fontFamily: "inherit",
   },
   breadcrumb: {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    padding: "0 24px 16px",
-    maxWidth: "1100px",
-    margin: "0 auto",
+    display: "flex", alignItems: "center", gap: "8px",
+    padding: "0 24px 16px", maxWidth: "1100px", margin: "0 auto",
   },
-  breadcrumbShow: {
-    fontSize: "14px",
-    color: "#888",
-    fontWeight: 500,
-  },
-  breadcrumbSep: {
-    fontSize: "16px",
-    color: "#555",
-  },
-  breadcrumbSeason: {
-    fontSize: "14px",
-    color: "#e5a00d",
-    fontWeight: 600,
-  },
-  loadingWrap: {
-    display: "flex",
-    justifyContent: "center",
-    padding: "64px",
-  },
+  breadcrumbShow: { fontSize: "14px", color: "#888", fontWeight: 500 },
+  breadcrumbSep: { fontSize: "16px", color: "#555" },
+  breadcrumbSeason: { fontSize: "14px", color: "#e5a00d", fontWeight: 600 },
+  loadingWrap: { display: "flex", justifyContent: "center", padding: "64px" },
   spinner: {
-    width: "32px",
-    height: "32px",
-    border: "3px solid rgba(255,255,255,0.1)",
-    borderTopColor: "#e5a00d",
-    borderRadius: "50%",
-    animation: "spin 0.8s linear infinite",
+    width: "32px", height: "32px",
+    border: "3px solid rgba(255,255,255,0.1)", borderTopColor: "#e5a00d",
+    borderRadius: "50%", animation: "spin 0.8s linear infinite",
   },
-  empty: {
-    textAlign: "center",
-    padding: "64px",
-    color: "#666",
-    fontSize: "15px",
-  },
+  empty: { textAlign: "center", padding: "64px", color: "#666", fontSize: "15px" },
   list: {
-    maxWidth: "1100px",
-    margin: "0 auto",
-    padding: "0 24px 48px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
+    maxWidth: "1100px", margin: "0 auto", padding: "0 24px 48px",
+    display: "flex", flexDirection: "column", gap: "10px",
   },
-  episodeRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "16px",
-    padding: "8px",
-    borderRadius: "10px",
-    border: "1px solid rgba(255,255,255,0.06)",
-    background: "rgba(255,255,255,0.02)",
-    cursor: "pointer",
-    color: "inherit",
-    textAlign: "left",
-    fontFamily: "inherit",
-    transition: "background 0.15s ease, border-color 0.15s ease",
-    width: "100%",
+  episodeCard: {
+    display: "flex", gap: "14px", padding: "10px", borderRadius: "8px",
+    border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)",
+    cursor: "pointer", color: "inherit", textAlign: "left", fontFamily: "inherit",
+    transition: "all 0.2s ease", width: "100%",
   },
-  episodeThumb: {
-    width: "160px",
-    height: "90px",
-    objectFit: "cover",
-    borderRadius: "6px",
-    flexShrink: 0,
-    background: "rgba(255,255,255,0.03)",
+  episodeCardHover: {
+    borderColor: "rgba(229,160,13,0.3)", background: "rgba(255,255,255,0.05)",
+    transform: "scale(1.01)",
   },
+  thumbWrap: {
+    width: "200px", height: "112px", borderRadius: "6px", flexShrink: 0,
+    position: "relative", overflow: "hidden", background: "rgba(255,255,255,0.03)",
+  },
+  episodeThumb: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
   episodePlaceholder: {
-    width: "160px",
-    height: "90px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: "6px",
-    flexShrink: 0,
-    background: "rgba(255,255,255,0.03)",
-    color: "#555",
-    fontSize: "12px",
-    fontWeight: 500,
+    width: "100%", height: "100%", display: "flex", alignItems: "center",
+    justifyContent: "center", color: "#555", fontSize: "12px", fontWeight: 500,
+  },
+  playOverlay: {
+    position: "absolute", inset: 0, display: "flex", alignItems: "center",
+    justifyContent: "center", transition: "opacity 0.2s ease", background: "rgba(0,0,0,0.3)",
+  },
+  playCircle: {
+    width: "36px", height: "36px", borderRadius: "50%", background: "rgba(0,0,0,0.6)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+  },
+  durationBadge: {
+    position: "absolute", bottom: "4px", right: "6px",
+    background: "rgba(0,0,0,0.7)", padding: "1px 6px", borderRadius: "3px",
+    fontSize: "10px", color: "#ccc",
   },
   episodeInfo: {
-    flex: 1,
-    minWidth: 0,
+    display: "flex", flexDirection: "column", justifyContent: "center",
+    gap: "4px", flex: 1, minWidth: 0,
   },
-  episodeNumber: {
-    fontSize: "12px",
-    color: "#e5a00d",
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: "0.03em",
-    marginBottom: "4px",
-  },
+  episodeMeta: { display: "flex", alignItems: "center", gap: "8px" },
+  episodeNumber: { color: "#e5a00d", fontSize: "12px", fontWeight: 700 },
   episodeTitle: {
-    fontSize: "15px",
-    fontWeight: 600,
-    color: "#e0e0e0",
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
+    color: "#f0f0f0", fontSize: "14px", fontWeight: 500,
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+  },
+  episodeSummary: {
+    color: "#888", fontSize: "12px", lineHeight: "1.4", margin: 0,
+    display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
   },
 };
