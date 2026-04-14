@@ -174,8 +174,12 @@ export function setStreams(
   return apiPut(`/api/plex/streams/${partId}`, options);
 }
 
-export async function pingSession(sessionId: string): Promise<void> {
-  await apiGet(`/api/plex/hls/ping/${encodeURIComponent(sessionId)}`);
+export async function pingSession(sessionId: string, timeMs?: number): Promise<void> {
+  let url = `/api/plex/hls/ping/${encodeURIComponent(sessionId)}`;
+  if (timeMs != null && Number.isFinite(timeMs)) {
+    url += `?time=${Math.round(timeMs)}`;
+  }
+  await apiGet(url);
 }
 
 export function stopSession(sessionId: string): Promise<void> {

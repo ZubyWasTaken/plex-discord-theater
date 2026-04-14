@@ -203,8 +203,17 @@ async function pollSubManifest(session: PrefetchSession): Promise<void> {
  * Start pre-fetching segments for a transcode session.
  * Call after manifest fetch once the plexKey is known.
  */
+const MAX_CONCURRENT_SESSIONS = 2;
+
 export function startPrefetch(sessionId: string, plexKey: string): void {
   stopPrefetch(sessionId);
+
+  // Guard: one Express process serves up to 2 Discord servers
+  if (sessions.size >= MAX_CONCURRENT_SESSIONS) {
+    console.warn("[Prefetch] Max concurrent sessions reached (" + MAX_CONCURRENT_SESSIONS +
+      "), skipping prefetch for", sessionId.substring(0, 8));
+    return;
+  }
 
   const session: PrefetchSession = {
     plexKey,
