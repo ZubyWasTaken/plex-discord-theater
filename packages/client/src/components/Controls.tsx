@@ -8,6 +8,9 @@ interface ControlsProps {
   onSyncPause?: (position: number) => void;
   onSyncResume?: (position: number) => void;
   onSyncSeek?: (position: number) => void;
+  onToggleMute?: () => void;
+  onOpenTrackSwitcher?: () => void;
+  showKeyboardHints?: boolean;
 }
 
 function fmt(seconds: number): string {
@@ -21,14 +24,38 @@ function fmt(seconds: number): string {
 
 const HIDE_DELAY_MS = 3000;
 
-export function Controls({ videoRef, isHost, title, onBack, onSyncPause, onSyncResume, onSyncSeek }: ControlsProps) {
+export function Controls({
+  videoRef,
+  isHost,
+  title,
+  onBack,
+  onSyncPause,
+  onSyncResume,
+  onSyncSeek,
+  onToggleMute,
+  onOpenTrackSwitcher,
+  showKeyboardHints = true,
+}: ControlsProps) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
+  const [muted, setMuted] = useState(false);
   const [visible, setVisible] = useState(true);
+  const [hoveringProgress, setHoveringProgress] = useState(false);
+  const [hintsVisible, setHintsVisible] = useState(showKeyboardHints);
   const progressRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hintsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const previousVolumeRef = useRef(1);
+  const [bufferedEnd, setBufferedEnd] = useState(0);
+
+  // Fade out keyboard hints after 10s
+  useEffect(() => {
+    if (!hintsVisible) return;
+    hintsTimer.current = setTimeout(() => setHintsVisible(false), 10_000);
+    return () => { if (hintsTimer.current) clearTimeout(hintsTimer.current); };
+  }, [hintsVisible]);
 
   const resetHideTimer = useCallback(() => {
     setVisible(true);
@@ -39,17 +66,14 @@ export function Controls({ videoRef, isHost, title, onBack, onSyncPause, onSyncR
   useEffect(() => {
     const parent = videoRef.current?.parentElement?.parentElement;
     if (!parent) return;
-
     const onMove = () => resetHideTimer();
     const onLeave = () => {
       if (hideTimer.current) clearTimeout(hideTimer.current);
       setVisible(false);
     };
-
     parent.addEventListener("mousemove", onMove);
     parent.addEventListener("mouseleave", onLeave);
     resetHideTimer();
-
     return () => {
       parent.removeEventListener("mousemove", onMove);
       parent.removeEventListener("mouseleave", onLeave);
@@ -60,22 +84,24 @@ export function Controls({ videoRef, isHost, title, onBack, onSyncPause, onSyncR
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-
     const onPlay = () => setPlaying(true);
     const onPause = () => {
       setPlaying(false);
       setVisible(true);
       if (hideTimer.current) clearTimeout(hideTimer.current);
     };
-    const onTime = () => setCurrentTime(video.currentTime);
+    const onTime = () => {
+      setCurrentTime(video.currentTime);
+      if (video.buffered.length > 0) {
+        setBufferedEnd(video.buffered.end(video.buffered.length - 1));
+      }
+    };
     const onDur = () => setDuration(video.duration || 0);
-
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
     video.addEventListener("timeupdate", onTime);
     video.addEventListener("loadedmetadata", onDur);
     video.addEventListener("durationchange", onDur);
-
     return () => {
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
@@ -110,16 +136,56 @@ export function Controls({ videoRef, isHost, title, onBack, onSyncPause, onSyncR
     [isHost, duration, videoRef, onSyncSeek],
   );
 
+  const skipBack = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !isHost) return;
+    const newTime = Math.max(0, video.currentTime - 10);
+    video.currentTime = newTime;
+    onSyncSeek?.(newTime);
+  }, [videoRef, isHost, onSyncSeek]);
+
+  const skipForward = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !isHost) return;
+    const newTime = Math.min(video.duration || 0, video.currentTime + 10);
+    video.currentTime = newTime;
+    onSyncSeek?.(newTime);
+  }, [videoRef, isHost, onSyncSeek]);
+
+  const toggleMute = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (muted) {
+      video.volume = previousVolumeRef.current;
+      setVolume(previousVolumeRef.current);
+      setMuted(false);
+    } else {
+      previousVolumeRef.current = volume;
+      video.volume = 0;
+      setVolume(0);
+      setMuted(true);
+    }
+    onToggleMute?.();
+  }, [videoRef, muted, volume, onToggleMute]);
+
   const handleVolume = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const v = parseFloat(e.target.value);
       setVolume(v);
       if (videoRef.current) videoRef.current.volume = v;
+      if (v > 0 && muted) {
+        setMuted(false);
+        previousVolumeRef.current = v;
+      } else if (v === 0 && !muted) {
+        setMuted(true);
+      }
     },
-    [videoRef],
+    [videoRef, muted],
   );
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const buffered = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
+  const barHeight = hoveringProgress ? 8 : 5;
 
   return (
     <div
@@ -142,10 +208,33 @@ export function Controls({ videoRef, isHost, title, onBack, onSyncPause, onSyncR
 
       {/* Bottom bar */}
       <div style={styles.bottomBar}>
-        {/* Progress bar with larger hit area */}
-        <div ref={progressRef} onClick={seek} style={styles.progressHit}>
-          <div style={styles.progressTrack}>
+        {/* Chunky progress bar */}
+        <div
+          ref={progressRef}
+          onClick={seek}
+          onMouseEnter={() => setHoveringProgress(true)}
+          onMouseLeave={() => setHoveringProgress(false)}
+          style={styles.progressHit}
+        >
+          <div style={{ ...styles.progressTrack, height: barHeight, transition: "height 0.15s ease" }}>
+            <div style={{ ...styles.progressBuffer, width: `${buffered}%` }} />
             <div style={{ ...styles.progressFill, width: `${progress}%` }} />
+            <div
+              style={{
+                position: "absolute",
+                left: `${progress}%`,
+                top: "50%",
+                transform: "translate(-50%, -50%)",
+                width: 14,
+                height: 14,
+                borderRadius: "50%",
+                background: "#e5a00d",
+                boxShadow: "0 0 8px rgba(229,160,13,0.5)",
+                opacity: hoveringProgress ? 1 : 0,
+                transition: "opacity 0.15s ease",
+                pointerEvents: "none",
+              }}
+            />
           </div>
         </div>
 
@@ -165,11 +254,31 @@ export function Controls({ videoRef, isHost, title, onBack, onSyncPause, onSyncR
                 )}
               </button>
             )}
+            {isHost && (
+              <>
+                <button onClick={skipBack} style={styles.skipBtn} title="Back 10s">
+                  <span style={{ fontSize: 16 }}>{"\u21BA"}</span>
+                  <span style={{ fontSize: 11 }}>10</span>
+                </button>
+                <button onClick={skipForward} style={styles.skipBtn} title="Forward 10s">
+                  <span style={{ fontSize: 16 }}>{"\u21BB"}</span>
+                  <span style={{ fontSize: 11 }}>10</span>
+                </button>
+              </>
+            )}
             <span style={styles.time}>
               {fmt(currentTime)} / {fmt(duration)}
             </span>
           </div>
           <div style={styles.right}>
+            {isHost && onOpenTrackSwitcher && (
+              <button onClick={onOpenTrackSwitcher} style={styles.gearBtn} title="Audio & Subtitles">
+                {"\u2699"}
+              </button>
+            )}
+            <button onClick={toggleMute} style={styles.muteBtn} title={muted ? "Unmute" : "Mute"}>
+              {muted ? "\u{1F507}" : "\u{1F50A}"}
+            </button>
             <input
               type="range"
               min="0"
@@ -179,6 +288,12 @@ export function Controls({ videoRef, isHost, title, onBack, onSyncPause, onSyncR
               onChange={handleVolume}
               style={styles.volume}
             />
+            {hintsVisible && (
+              <div style={styles.hints}>
+                <span style={styles.hintBadge}>Space</span>
+                <span style={styles.hintBadge}>{"\u2190\u2192"}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -201,7 +316,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     gap: "12px",
     padding: "16px 20px",
-    background: "linear-gradient(to bottom, rgba(0,0,0,0.7), transparent)",
+    background: "linear-gradient(to bottom, rgba(0,0,0,0.8), transparent)",
   },
   backBtn: {
     display: "flex",
@@ -227,7 +342,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   bottomBar: {
     padding: "0 20px 16px",
-    background: "linear-gradient(to top, rgba(0,0,0,0.8), transparent)",
+    background: "linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.4) 60%, transparent 100%)",
     paddingTop: "48px",
   },
   progressHit: {
@@ -236,15 +351,23 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: "4px",
   },
   progressTrack: {
-    height: "4px",
+    height: 5,
     background: "rgba(255,255,255,0.15)",
-    borderRadius: "2px",
-    overflow: "hidden",
+    borderRadius: "3px",
+    position: "relative",
+    overflow: "visible",
+  },
+  progressBuffer: {
+    position: "absolute",
+    height: "100%",
+    background: "rgba(255,255,255,0.12)",
+    borderRadius: "3px",
   },
   progressFill: {
+    position: "absolute",
     height: "100%",
     background: "#e5a00d",
-    borderRadius: "2px",
+    borderRadius: "3px",
     transition: "width 0.1s linear",
   },
   controls: {
@@ -260,7 +383,7 @@ const styles: Record<string, React.CSSProperties> = {
   right: {
     display: "flex",
     alignItems: "center",
-    gap: "8px",
+    gap: "12px",
   },
   playBtn: {
     display: "flex",
@@ -275,14 +398,62 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     transition: "transform 0.15s ease",
   },
+  skipBtn: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    lineHeight: 1,
+    background: "none",
+    border: "none",
+    color: "rgba(255,255,255,0.6)",
+    cursor: "pointer",
+    fontFamily: "inherit",
+    padding: "2px 4px",
+  },
   time: {
     fontSize: "13px",
-    color: "#bbb",
+    color: "rgba(255,255,255,0.7)",
     fontVariantNumeric: "tabular-nums",
     fontWeight: 500,
+  },
+  gearBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "32px",
+    height: "32px",
+    borderRadius: "50%",
+    border: "none",
+    background: "rgba(255,255,255,0.1)",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: "16px",
+    fontFamily: "inherit",
+  },
+  muteBtn: {
+    background: "none",
+    border: "none",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: "16px",
+    padding: "4px",
+    fontFamily: "inherit",
   },
   volume: {
     width: "80px",
     accentColor: "#e5a00d",
+  },
+  hints: {
+    display: "flex",
+    gap: "4px",
+    transition: "opacity 0.5s ease",
+  },
+  hintBadge: {
+    background: "rgba(255,255,255,0.08)",
+    padding: "2px 6px",
+    borderRadius: "3px",
+    color: "rgba(255,255,255,0.3)",
+    fontSize: "10px",
+    letterSpacing: "0.5px",
   },
 };
