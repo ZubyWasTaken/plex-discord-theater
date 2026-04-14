@@ -191,10 +191,12 @@ export function App() {
 
       {/* Now Playing rejoin banner for viewers */}
       {showNowPlaying && (
-        <div style={styles.nowPlayingBanner}>
-          <span style={styles.nowPlayingText}>
-            Now playing: <strong>{syncState.title || "Untitled"}</strong>
-          </span>
+        <div style={styles.nowPlayingBanner} onClick={handleRejoin}>
+          <div style={styles.nowPlayingPoster} />
+          <div style={styles.nowPlayingInfo}>
+            <div style={styles.nowPlayingLabel}>NOW PLAYING</div>
+            <div style={styles.nowPlayingTitle}>{syncState.title || "Untitled"}</div>
+          </div>
           <button onClick={handleRejoin} style={styles.nowPlayingBtn}>
             Watch
           </button>
@@ -205,7 +207,11 @@ export function App() {
         <>
           {!effectiveIsHost && !syncState.ratingKey && (
             <div style={styles.waitingBanner}>
-              Waiting for host to start playback...
+              <div style={styles.waitingDot} />
+              <div>
+                <div style={styles.waitingPrimary}>Host is browsing the library...</div>
+                <div style={styles.waitingSecondary}>You can browse too — playback starts when the host picks something</div>
+              </div>
             </div>
           )}
           <Library
@@ -327,13 +333,32 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#888",
   },
   waitingBanner: {
-    textAlign: "center",
-    padding: "12px 24px",
-    background: "rgba(229,160,13,0.1)",
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    margin: "0 24px 16px",
+    padding: "14px 18px",
+    background: "linear-gradient(135deg, rgba(229,160,13,0.06), rgba(229,160,13,0.12))",
+    border: "1px solid rgba(229,160,13,0.2)",
+    borderRadius: "10px",
+  },
+  waitingDot: {
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    background: "#e5a00d",
+    animation: "pulse 2s ease-in-out infinite",
+    flexShrink: 0,
+  },
+  waitingPrimary: {
     color: "#e5a00d",
-    fontSize: "14px",
+    fontSize: "13px",
     fontWeight: 500,
-    borderBottom: "1px solid rgba(229,160,13,0.2)",
+  },
+  waitingSecondary: {
+    color: "rgba(229,160,13,0.6)",
+    fontSize: "11px",
+    marginTop: "2px",
   },
   promotedToast: {
     position: "fixed",
@@ -352,20 +377,44 @@ const styles: Record<string, React.CSSProperties> = {
   nowPlayingBanner: {
     display: "flex",
     alignItems: "center",
-    justifyContent: "center",
-    gap: "12px",
-    padding: "10px 24px",
-    background: "rgba(229,160,13,0.1)",
-    borderBottom: "1px solid rgba(229,160,13,0.2)",
+    gap: "16px",
+    margin: "0 24px 16px",
+    padding: "16px",
+    background: "linear-gradient(135deg, rgba(229,160,13,0.08), rgba(229,160,13,0.15))",
+    border: "1px solid rgba(229,160,13,0.25)",
+    borderRadius: "12px",
+    cursor: "pointer",
   },
-  nowPlayingText: {
-    fontSize: "14px",
-    color: "#e5a00d",
-    fontWeight: 500,
+  nowPlayingPoster: {
+    width: "48px",
+    height: "72px",
+    borderRadius: "6px",
+    background: "linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.04))",
+    flexShrink: 0,
+  },
+  nowPlayingInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  nowPlayingLabel: {
+    color: "rgba(229,160,13,0.7)",
+    fontSize: "10px",
+    textTransform: "uppercase",
+    letterSpacing: "1px",
+    fontWeight: 600,
+    marginBottom: "3px",
+  },
+  nowPlayingTitle: {
+    color: "#f0f0f0",
+    fontSize: "15px",
+    fontWeight: 600,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   nowPlayingBtn: {
-    padding: "5px 16px",
-    borderRadius: "6px",
+    padding: "8px 20px",
+    borderRadius: "8px",
     border: "none",
     background: "#e5a00d",
     color: "#000",
@@ -373,5 +422,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
     fontFamily: "inherit",
     cursor: "pointer",
+    flexShrink: 0,
   },
 };
