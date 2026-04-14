@@ -151,115 +151,49 @@ Set the resulting `https://xxxx.trycloudflare.com` URL as the URL mapping in you
 
 ## VPS Relay (Optional)
 
-Route HLS segments through a cheap VPS (~€4.50/mo) to offload upload bandwidth from your home server during watch parties. Instead of your home connection uploading to every viewer, it uploads one stream to the VPS, and the VPS fans it out to everyone.
+Route HLS segments through a VPS (~$7/mo) to offload upload bandwidth from your home server during watch parties. Your home uploads one stream to the VPS; the VPS fans it out to all viewers from its 1 Gbps connection.
 
 ### Why
 
-If your home upload is 100 Mb/s and you're running a watch party with 10 viewers at 8 Mbps, that's 80 Mb/s — leaving almost nothing for your other Plex users. With a VPS relay, your home upload only uses ~8 Mb/s (one stream to the VPS) regardless of how many viewers are watching.
+If your home upload is 100 Mb/s and you're running a watch party with 10 viewers at 8 Mbps, that's 80 Mb/s — leaving almost nothing for other Plex users. With the VPS relay, home upload drops to ~8 Mb/s regardless of viewer count.
 
-### Quick Setup
+### Quick Setup Overview
 
-1. **Create a Hetzner CX23** (~€4.50/mo with IPv4) at [hetzner.com/cloud](https://www.hetzner.com/cloud)
-2. **SSH in and install nginx + certbot:**
-   ```bash
-   apt update && apt upgrade -y
-   ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw enable
-   apt install nginx certbot python3-certbot-nginx -y
-   ```
-3. **Point a domain at the VPS and get SSL:**
-   ```bash
-   # After creating DNS A record: theater.yourdomain.com → VPS_IP
-   certbot --nginx -d theater.yourdomain.com
-   ```
-4. **Configure nginx** — create `/etc/nginx/sites-available/theater`:
-   ```nginx
-   proxy_cache_path /tmp/hls-cache levels=1:2
-       keys_zone=hls:10m max_size=2g inactive=5m use_temp_path=off;
-
-   server {
-       listen 443 ssl;
-       server_name theater.yourdomain.com;
-
-       ssl_certificate /etc/letsencrypt/live/theater.yourdomain.com/fullchain.pem;
-       ssl_certificate_key /etc/letsencrypt/live/theater.yourdomain.com/privkey.pem;
-
-       location /seg/video/:/transcode/ {
-           if ($arg_key != "YOUR_SECRET_KEY") {
-               return 403;
-           }
-           if ($request_method = OPTIONS) {
-               add_header Access-Control-Allow-Origin * always;
-               add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-               add_header Content-Length 0;
-               return 204;
-           }
-
-           set $args "";
-           proxy_pass https://YOUR_HOME_PUBLIC_IP:32400/video/:/transcode/;
-           proxy_ssl_verify off;
-           proxy_set_header X-Plex-Token YOUR_PLEX_TOKEN;
-           proxy_set_header X-Plex-Client-Identifier plex-discord-theater;
-           proxy_set_header Host $proxy_host;
-
-           proxy_cache hls;
-           proxy_cache_valid 200 10s;
-           proxy_cache_lock on;
-           proxy_cache_lock_age 10s;
-           proxy_cache_lock_timeout 10s;
-           proxy_cache_key $uri;
-           proxy_cache_use_stale error timeout updating;
-
-           add_header Access-Control-Allow-Origin * always;
-           add_header X-Cache-Status $upstream_cache_status always;
-
-           proxy_connect_timeout 5s;
-           proxy_read_timeout 10s;
-       }
-
-       location /health {
-           return 200 "ok";
-           add_header Content-Type text/plain;
-       }
-   }
-   ```
-   Then enable it:
-   ```bash
-   rm -f /etc/nginx/sites-enabled/default
-   ln -s /etc/nginx/sites-available/theater /etc/nginx/sites-enabled/
-   nginx -t && systemctl reload nginx
-   ```
-5. **Open port 32400** on your home router/firewall for the VPS IP
-6. **Add env vars** to your `.env`:
+1. **Create a Hetzner VPS** (CAX11 or CX23) at [hetzner.com/cloud](https://www.hetzner.com/cloud) — Primary IPv4, Ubuntu 24.04
+2. **Install nginx + certbot** and set up SSL for `theater.yourdomain.com`
+3. **Add Discord URL Mapping** — `/theater` → `theater.yourdomain.com` in Discord Developer Portal → Activities → URL Mappings
+4. **Add Cloudflare WAF rule** (if your Express domain uses Cloudflare) — allow VPS IP to bypass WAF
+5. **Configure nginx** to proxy through Express (not directly to Plex — Plex throttles external delivery)
+6. **Add env vars** to `.env`:
    ```env
    VPS_RELAY_URL=https://theater.yourdomain.com
    VPS_RELAY_KEY=your-secret-key
    ```
-   Generate a strong key with: `openssl rand -hex 32`
+   Generate key: `openssl rand -hex 32`
 
-Replace `YOUR_SECRET_KEY`, `YOUR_HOME_PUBLIC_IP`, and `YOUR_PLEX_TOKEN` in the nginx config with your actual values. The `VPS_RELAY_KEY` in `.env` must match `YOUR_SECRET_KEY` in the nginx config.
+See **[docs/vps-relay-setup.md](docs/vps-relay-setup.md)** for the complete nginx config and step-by-step instructions.
 
 ### How It Works
 
 When `VPS_RELAY_URL` and `VPS_RELAY_KEY` are set:
-- HLS manifest segment URLs are rewritten to point to the VPS instead of the Express server
-- The VPS nginx caches each segment on first fetch, then serves it from cache for subsequent viewers
-- P2P is automatically disabled (the VPS handles fan-out, making P2P unnecessary)
-- CSP headers are updated to allow the browser to fetch segments from the VPS origin
+- `.ts` segment URLs in HLS manifests are rewritten to `/theater/seg/...` (relative, via Discord's proxy to VPS)
+- VPS nginx validates `?key=`, rewrites to `/api/plex/hls/seg?p=...`, proxies to your Express server
+- Express fetches the segment from Plex locally (unthrottled) and returns it
+- VPS caches the segment for 5 minutes — subsequent viewers get it instantly from cache
+- P2P is automatically disabled (VPS handles fan-out)
 
-When the env vars are removed, everything reverts to the default behavior (segments through Express, P2P enabled).
+Sub-manifests stay on Express for correct URL rewriting. Do NOT proxy directly to Plex:32400 — Plex throttles external HTTP delivery to 1x realtime, causing stuttering.
+
+When env vars are removed, everything reverts to Express proxying with P2P.
 
 ### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `VPS_RELAY_URL` | No | Full URL of the VPS relay (e.g. `https://theater.yourdomain.com`). Omit to disable. |
-| `VPS_RELAY_KEY` | No | Shared secret between the app and VPS nginx. Must match the key in the nginx config. |
+| `VPS_RELAY_URL` | No | VPS relay URL (e.g. `https://theater.yourdomain.com`). Omit to disable. |
+| `VPS_RELAY_KEY` | No | Shared secret validated by nginx. Must match the key in the nginx config. |
 
-Both must be set for VPS relay to activate. If either is missing, the app falls back to direct segment proxying with P2P.
-
-### Full Documentation
-
-For detailed setup instructions, troubleshooting, testing, and architecture diagrams, see [docs/vps-relay-setup.md](docs/vps-relay-setup.md).
+Both must be set to activate. If either is missing, falls back to direct Express proxying with P2P.
 
 ---
 
@@ -272,9 +206,11 @@ For detailed setup instructions, troubleshooting, testing, and architecture diag
 | Video won't play | Check browser console for HLS errors; ensure Plex can transcode |
 | "Session expired" banner | The server restarted and your session is stale — close and reopen the Activity |
 | Tunnel URL changed | Update the URL mapping in Discord Developer Portal |
-| VPS segments return 403 | Check that `VPS_RELAY_KEY` in `.env` matches the key in the nginx config |
-| VPS segments return 502 | VPS can't reach Plex — check port 32400 is open for the VPS IP, and `YOUR_HOME_PUBLIC_IP` is correct in nginx |
-| CORS errors with VPS | Verify `add_header Access-Control-Allow-Origin * always;` is in the nginx config (the `always` keyword matters) |
+| VPS segments return 403 | Key mismatch — check `VPS_RELAY_KEY` in `.env` matches the key in nginx config |
+| VPS segments return 403 (Cloudflare) | Cloudflare blocking VPS — add WAF rule to allow VPS IP |
+| VPS segments return 502 | VPS can't reach Express server — check Cloudflare WAF rule, Express domain DNS |
+| VPS causes stuttering | Proxying directly to Plex:32400 — must proxy through Express instead (see docs) |
+| Segments blocked in Discord | Missing URL mapping — add `/theater → theater.yourdomain.com` in Discord Dev Portal |
 
 ## License
 

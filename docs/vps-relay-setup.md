@@ -1,93 +1,123 @@
 # VPS Relay Setup Guide
 
-Route HLS segments through a Hetzner VPS to offload upload bandwidth from your home server during watch parties.
+Route HLS segments through a VPS with nginx caching to offload home upload bandwidth during watch parties.
 
 ## Why
 
-Your home server has 100 Mb/s upload. During a watch party with 10 viewers at 6.2 Mb/s average, that's 62 Mb/s just for the party — leaving little room for your other 24-28 Plex users and qBittorrent seeding.
-
-With a VPS relay, your home server uploads **one stream** to the VPS (~6.2 Mb/s), and the VPS (1 Gbps) fans it out to all viewers. Home upload during a watch party drops from ~62 Mb/s to ~6.2 Mb/s.
+Without VPS: during a watch party with 10 viewers at 8 Mbps, your home upload pushes 80 Mbps — leaving nothing for other Plex users. With VPS: your home uploads one stream (~8 Mbps) to the VPS, and the VPS fans it out to all viewers from its 1 Gbps connection.
 
 ## Architecture
 
 ```
-BEFORE (current):
+WITHOUT VPS:
   Plex (home) ──segments──► Express (home) ──► Viewer 1
-                                           ──► Viewer 2
+                                           ──► Viewer 2  
                                            ──► Viewer 3
   Home upload: N × bitrate (bottleneck)
 
-AFTER (with VPS):
-  Plex (home) ──segments──► VPS (nginx cache) ──► Viewer 1
-                            (1st fetch only)  ──► Viewer 2
-                                              ──► Viewer 3
-  Express (home) ──manifests only──► Viewers (tiny, ~2KB each)
-  Home upload: 1 × bitrate (just feeding the VPS)
+WITH VPS:
+  Plex (home)
+      │ (local, unthrottled)
+  Express (home) ──segments──► VPS (nginx cache) ──► Viewer 1
+                               (1st fetch only)  ──► Viewer 2
+                                                 ──► Viewer 3
+  Express manifests ──────────────────────────────► All viewers (~2KB each)
+  Home upload: 1 stream to VPS
 ```
 
-What stays on Express (home):
-- Manifest requests (`master.m3u8`) — small, infrequent
-- Session lifecycle (decision, start, stop, ping)
-- Transcode key tracking, auth
+**Important:** The VPS proxies through your Express server (not directly to Plex).
+Plex throttles external HTTP segment delivery to 1x realtime. Express fetches
+segments from Plex locally (same network), which is unthrottled, and the VPS caches
+the result.
 
-What moves to VPS:
-- Segment delivery (`.ts` files) — the actual video bytes
+What stays on Express (home):
+- All manifests (`master.m3u8`, sub-manifests) — small, need server-side rewriting
+- Session lifecycle (decision, start, stop, ping, auth)
+
+What routes through VPS:
+- `.ts` segment delivery — the actual video bytes
 
 ---
 
 ## Step 1: Create the Hetzner VPS
 
 1. Go to https://www.hetzner.com/cloud
-2. Create a **CX23** instance (Shared Cost-Optimized)
-   - 2 vCPU, 4 GiB RAM, 40 GB SSD
-   - ~€3.99/mo + €0.50/mo for IPv4
-   - 20 TB traffic included (you'll use ~1-1.5 TB)
-3. **Select Primary IPv4** (not IPv6 only — your Plex server and viewers need IPv4)
-4. Location: **NBG-1 (Nuremberg)** — best peering
+2. Create a **CAX11** (Arm64 Ampere, Shared Cost-Optimized) or **CX23** (x86)
+   - 2 vCPU, 4 GiB RAM, 40 GB SSD, 20 TB traffic
+   - ~$7.31/mo (CAX11 + IPv4) or ~€4.50/mo (CX23 + IPv4)
+3. **Select Primary IPv4** (not IPv6 only)
+4. Location: NBG-1 (Nuremberg) — best peering for EU
 5. Add your SSH key during creation
+6. OS: Ubuntu 24.04
 
 ## Step 2: Initial Server Setup
 
-SSH in and lock it down:
-
 ```bash
 ssh root@YOUR_VPS_IP
+export TERM=xterm-256color   # fixes nano on some terminals
 
-# Update
 apt update && apt upgrade -y
-
-# Firewall
-ufw allow 22/tcp    # SSH
-ufw allow 80/tcp    # HTTP (certbot verification)
-ufw allow 443/tcp   # HTTPS (HLS segments)
-ufw enable
-
-# Install nginx + certbot
+ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp && ufw enable
 apt install nginx certbot python3-certbot-nginx -y
 ```
 
 ## Step 3: DNS + SSL
 
-Point a domain/subdomain at the VPS:
+Create an **A record** pointing a subdomain at the VPS (do NOT proxy through Cloudflare — use DNS only/grey cloud):
 
 ```
 theater.yourdomain.com  →  A record  →  YOUR_VPS_IP
 ```
 
-Then get an SSL certificate:
+Get SSL certificate:
 
 ```bash
 certbot --nginx -d theater.yourdomain.com
 ```
 
-## Step 4: Configure nginx
+## Step 4: Discord Developer Portal — URL Mapping
 
-Create `/etc/nginx/sites-available/theater`:
+In your Discord app's **Activities → URL Mappings**, add a Proxy Path Mapping:
 
-```nginx
+```
+Prefix: /theater
+Target: theater.yourdomain.com
+```
+
+This is required because Discord's Activity iframe enforces its own CSP. The app
+generates relative segment URLs (`/theater/seg/...`) which Discord's proxy forwards
+to `theater.yourdomain.com`. Without this mapping, browsers block cross-origin
+segment fetches.
+
+## Step 5: Cloudflare WAF (if Express domain uses Cloudflare)
+
+If your Express server domain (e.g. `watchtogether.yourdomain.com`) is proxied
+through Cloudflare, you must whitelist the VPS IP or Cloudflare will block the
+VPS's segment proxy requests.
+
+In Cloudflare → **Security → WAF → Custom Rules**, create:
+- **Name:** Allow VPS relay
+- **Field:** IP Source Address | **Operator:** equals | **Value:** YOUR_VPS_IP
+- **Action:** Skip
+- **Check all boxes:** All remaining custom rules, All rate limiting rules, All managed rules, All Super Bot Fight Mode Rules
+
+Save the rule.
+
+## Step 6: Configure nginx
+
+Use `cat >` to avoid nano encoding issues:
+
+```bash
+cat > /etc/nginx/sites-available/theater << 'CONF'
 proxy_cache_path /tmp/hls-cache levels=1:2
-    keys_zone=hls:10m max_size=2g inactive=5m
-    use_temp_path=off;
+    keys_zone=hls:10m max_size=2g inactive=5m use_temp_path=off;
+
+# map evaluated before rewrite phase — allows key validation with rewrite
+map_hash_bucket_size 128;
+map $arg_key $key_valid {
+    "YOUR_SECRET_KEY" 1;
+    default 0;
+}
 
 server {
     listen 443 ssl;
@@ -96,25 +126,11 @@ server {
     ssl_certificate /etc/letsencrypt/live/theater.yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/theater.yourdomain.com/privkey.pem;
 
-    # ── Segment proxy ────────────────────────────────────────
-    # Clients request: /seg/video/:/transcode/universal/session/.../00000.ts?key=SECRET
-    # nginx strips /seg, validates the key, proxies to Plex, caches the response.
-    #
-    # Path-based approach avoids URL encoding issues with Plex's
-    # special characters (like :/ in transcode paths).
-
-    # Only proxy transcode segment paths — not arbitrary Plex API endpoints.
-    # This prevents authenticated users from using the VPS key to access
-    # other Plex endpoints (e.g. /library/sections) through the relay.
+    # Only proxy transcode segments — prevents key being used to access other paths
     location /seg/video/:/transcode/ {
-        # ── Auth: validate shared secret in query param ──
-        # segProxyUrl() appends ?key=SECRET to every segment URL,
-        # so no client-side xhrSetup is needed — hls.js just uses the URLs as-is.
-        if ($arg_key != "YOUR_SECRET_KEY_HERE") {
+        if ($key_valid = 0) {
             return 403;
         }
-
-        # ── CORS preflight (browsers need this for cross-origin segments) ──
         if ($request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin * always;
             add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
@@ -122,296 +138,140 @@ server {
             return 204;
         }
 
-        # ── Proxy to home Plex server ──
-        # The trailing / on location and proxy_pass makes nginx strip the
-        # location prefix and forward the rest of the path to Plex.
-        # Example: /seg/video/:/transcode/... → GET /video/:/transcode/... on Plex
-        #
-        # Strip query params (?key=...) so they aren't forwarded to Plex.
-        # Plex ignores unknown params, but there's no reason to send our auth key upstream.
-        set $args "";
-        proxy_pass https://YOUR_HOME_PUBLIC_IP:32400/video/:/transcode/;
+        # Save original URI for cache key before rewrite changes it
+        set $seg_path $uri;
+
+        # Rewrite to Express seg endpoint — Express fetches from Plex locally
+        # (unthrottled). Do NOT proxy directly to Plex port 32400 — Plex throttles
+        # external HTTP delivery to 1x realtime, causing stuttering.
+        rewrite ^/seg(.*)$ /api/plex/hls/seg?p=$1 break;
+
+        proxy_pass https://YOUR_EXPRESS_DOMAIN;
         proxy_ssl_verify off;
+        proxy_set_header Host YOUR_EXPRESS_DOMAIN;
+        proxy_set_header Authorization "";   # strip — Express handles its own auth
 
-        # Auth to Plex (stays server-side, never exposed to clients)
-        proxy_set_header X-Plex-Token YOUR_PLEX_TOKEN;
-        proxy_set_header X-Plex-Client-Identifier plex-discord-theater;
-
-        # Strip the ?key= param so Plex doesn't see it
-        proxy_set_header Host $proxy_host;
-
-        # ── Caching ──
-        # IMPORTANT: proxy_buffering must stay ON (the default).
-        # nginx cannot cache responses when buffering is disabled.
-        # Do NOT add "proxy_buffering off" here — it breaks caching entirely.
         proxy_cache hls;
-        proxy_cache_valid 200 5m;           # Cache successful responses for 5 minutes
-        proxy_cache_lock on;                # Only one request per segment to Plex
-        proxy_cache_lock_age 10s;           # If lock holder is slow, let others through
-        proxy_cache_lock_timeout 10s;       # Max wait for lock before fetching directly
-        proxy_cache_key $uri;               # Cache by path only (ignore query params)
-        proxy_cache_use_stale error timeout updating;  # Serve stale if Plex is slow
+        proxy_cache_valid 200 5m;
+        proxy_cache_lock on;
+        proxy_cache_lock_age 10s;
+        proxy_cache_lock_timeout 10s;
+        proxy_cache_key $seg_path;           # cache by path, ignore query params
+        proxy_cache_use_stale error timeout updating;
 
-        # ── Response headers ──
         add_header Access-Control-Allow-Origin * always;
-        add_header X-Cache-Status $upstream_cache_status always;  # Debug: HIT/MISS
+        add_header X-Cache-Status $upstream_cache_status always;
 
-        # ── Timeouts ──
         proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
+        proxy_read_timeout 30s;
     }
 
-    # ── Health check ─────────────────────────────────────────
     location /health {
         return 200 "ok";
         add_header Content-Type text/plain;
     }
 }
+CONF
 ```
 
-Enable and test:
+Replace `YOUR_SECRET_KEY`, `YOUR_EXPRESS_DOMAIN` (e.g. `watchtogether.yourdomain.com`), and `theater.yourdomain.com` with your actual values.
+
+Enable and reload:
 
 ```bash
-# Remove default site
 rm -f /etc/nginx/sites-enabled/default
-
-# Enable theater config
 ln -s /etc/nginx/sites-available/theater /etc/nginx/sites-enabled/
-
-# Test config for syntax errors
-nginx -t
-
-# If test passes, reload
-systemctl reload nginx
+nginx -t && systemctl reload nginx
 ```
 
-### What This Config Does
+## Step 7: Environment Variables
 
-1. Client requests `https://theater.yourdomain.com/seg/video/:/transcode/.../00000.ts?key=SECRET`
-2. nginx validates `?key=SECRET` — rejects with 403 if wrong
-3. nginx strips `/seg/` prefix, proxies `GET /video/:/transcode/.../00000.ts` to your Plex
-4. nginx caches the response for 10 seconds
-5. Next viewer requesting the same segment gets it from cache instantly (no Plex fetch)
-
-### Why Path-Based Instead of Query Parameter
-
-The previous version used `?p=<encoded-path>` which causes URL encoding problems:
-- `segProxyUrl()` encodes the path with `encodeURIComponent()`
-- nginx's `$arg_p` gives the raw encoded value
-- Passing encoded slashes (`%2F`) as a path in `proxy_pass` creates invalid requests
-- Plex paths with `:/` make this worse
-
-The path-based approach avoids all encoding issues — the Plex path goes directly
-into the URL path, and nginx's `location /seg/` + `proxy_pass .../` strips the
-prefix cleanly.
-
-## Step 5: Open Plex to the VPS
-
-On your Unraid/router, ensure port 32400 is reachable from the VPS IP.
-
-**Ideally, firewall it so ONLY the VPS IP can connect:**
+Add to your app's `.env`:
 
 ```bash
-# On Unraid or your router's firewall:
-# Allow 32400 from VPS_IP only (in addition to existing rules)
-iptables -A INPUT -p tcp --dport 32400 -s YOUR_VPS_IP -j ACCEPT
-```
-
-## Step 6: Code Change — `segProxyUrl()`
-
-The only code change is in `packages/server/src/routes/plex.ts`.
-
-The function `segProxyUrl()` (line ~1264) rewrites segment URLs in HLS manifests. Currently all segments point back to Express. With the VPS, segments point to the VPS instead.
-
-### Current code:
-
-```typescript
-function segProxyUrl(plexPath: string, authToken?: string): string {
-  let url = `/api/plex/hls/seg?p=${encodeURIComponent(plexPath)}`;
-  if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
-  return url;
-}
-```
-
-### New code:
-
-```typescript
-const VPS_RELAY_URL = process.env.VPS_RELAY_URL?.replace(/\/$/, "");
-const VPS_RELAY_KEY = process.env.VPS_RELAY_KEY;
-
-function segProxyUrl(plexPath: string, authToken?: string): string {
-  if (VPS_RELAY_URL && VPS_RELAY_KEY) {
-    // Path-based: /seg/video/:/transcode/...?key=SECRET
-    // No encodeURIComponent — Plex paths go directly into the URL path.
-    // The key is a query param so nginx validates it, and hls.js sends it
-    // automatically (no xhrSetup needed).
-    let url = `${VPS_RELAY_URL}/seg${plexPath}?key=${encodeURIComponent(VPS_RELAY_KEY)}`;
-    if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
-    return url;
-  }
-  // No VPS — fall back to proxying through Express (query-param based)
-  let url = `/api/plex/hls/seg?p=${encodeURIComponent(plexPath)}`;
-  if (authToken) url += `&token=${encodeURIComponent(authToken)}`;
-  return url;
-}
-```
-
-**No client-side changes needed.** The segment URLs in the manifest already point
-to the VPS with the key included, and hls.js fetches them as-is.
-
-## Step 7: P2P Toggle (Optional)
-
-When VPS is active, P2P is unnecessary (1 Gbps handles 80+ viewers at 12 Mbps).
-To disable P2P when VPS is active, wrap the P2P init in `Player.tsx` (lines ~136-194):
-
-```typescript
-// Fetch VPS config from server (add a /api/config endpoint, or include in existing response)
-const useP2P = !serverConfig.vpsRelayEnabled;
-
-if (useP2P) {
-  // Existing P2P setup: HlsJsP2PEngine.injectMixin(Hls), tracker, swarm, ICE, etc.
-} else {
-  // Plain HLS — no P2P engine, no tracker connection
-  hls = new Hls({ /* standard hls.js config without P2P */ });
-}
-```
-
-When `VPS_RELAY_URL` is removed from `.env`, P2P re-enables automatically.
-
-## Step 8: Environment Variables
-
-Add to `.env`:
-
-```bash
-# VPS Relay (optional — omit both to disable, segments proxy through Express as before)
 VPS_RELAY_URL=https://theater.yourdomain.com
-VPS_RELAY_KEY=some-random-secret-string
+VPS_RELAY_KEY=your-secret-key   # must match nginx config
 ```
 
-Add to `.env.example`:
+Generate a strong key: `openssl rand -hex 32`
 
-```bash
-# Optional — VPS relay for watch party segment delivery
-# When set, HLS segments route through the VPS instead of this server.
-# Also disables P2P (VPS bandwidth makes it unnecessary).
-# VPS_RELAY_URL=https://theater.yourdomain.com
-# VPS_RELAY_KEY=
+Add to `docker-compose.yml` environment:
+```yaml
+- VPS_RELAY_URL=${VPS_RELAY_URL}
+- VPS_RELAY_KEY=${VPS_RELAY_KEY}
 ```
 
-Generate a strong key:
+Rebuild and restart the container.
 
-```bash
-openssl rand -hex 32
-```
+---
+
+## How It Works (Request Flow)
+
+1. Host starts playback → Express starts Plex transcode → returns manifest
+2. Express rewrites segment URLs to `/theater/seg/video/:/transcode/...?key=SECRET`
+3. hls.js fetches segments via `/theater/seg/...` (relative, same-origin to Discord)
+4. Discord's proxy forwards to `theater.yourdomain.com/seg/video/:/transcode/...?key=SECRET`
+5. VPS nginx validates `?key=`, rewrites to `/api/plex/hls/seg?p=/video/:/transcode/...`
+6. VPS proxies to your Express server (via `YOUR_EXPRESS_DOMAIN`)
+7. Express fetches segment from Plex **locally** (no throttling) and returns it
+8. VPS caches the segment for 5 minutes, serves all subsequent viewers from cache
+
+Sub-manifests (`.m3u8` files) are **not** routed through VPS — they stay on Express
+so URL rewriting works correctly (RFC 3986 relative URL resolution drops query params
+from base URLs, which would lose the `?key=` on segment requests).
 
 ---
 
 ## Testing
 
-### 1. Test nginx config on VPS
-
 ```bash
-# SSH into VPS
-nginx -t
-# Should say: syntax is ok, test is successful
-```
-
-### 2. Test health endpoint
-
-```bash
+# 1. Health check
 curl https://theater.yourdomain.com/health
-# Should return: ok
+# → ok
+
+# 2. Auth rejection (no key)
+curl -o /dev/null -w "%{http_code}" "https://theater.yourdomain.com/seg/video/test"
+# → 403
+
+# 3. Express connectivity (from VPS)
+curl -I https://YOUR_EXPRESS_DOMAIN/api/plex/config
+# → 200 (requires Cloudflare WAF rule if Express uses Cloudflare)
 ```
 
-### 3. Test auth rejection
-
-```bash
-# No key — should get 403
-curl -o /dev/null -w "%{http_code}" "https://theater.yourdomain.com/seg/test"
-# 403
-
-# Wrong key — should get 403
-curl -o /dev/null -w "%{http_code}" "https://theater.yourdomain.com/seg/test?key=wrong"
-# 403
-```
-
-### 4. Test Plex proxy (from VPS)
-
-```bash
-# SSH into VPS, test direct connectivity to Plex
-curl -k -H "X-Plex-Token: YOUR_PLEX_TOKEN" \
-  "https://YOUR_HOME_IP:32400/identity"
-# Should return Plex server identity XML
-```
-
-### 5. Test a watch party
-
-Start a watch party with the VPS enabled and check browser DevTools Network tab:
-- Manifest (`master.m3u8`) comes from your Express server (home IP)
-- Segments (`.ts` files) come from `theater.yourdomain.com` (VPS)
-- Check the `X-Cache-Status` response header:
-  - `MISS` = first fetch, pulled from Plex
-  - `HIT` = served from VPS cache (no Plex fetch)
-
-### 6. Monitor VPS cache
-
-```bash
-# On the VPS, watch requests in real time
-tail -f /var/log/nginx/access.log
-
-# You should see:
-# First viewer requests 00001.ts → upstream_cache_status=MISS
-# Second viewer requests 00001.ts → upstream_cache_status=HIT
-```
-
-### 7. Monitor home upload
-
-During a watch party, your home upload should only show ~6-8 Mb/s
-(one stream to VPS) regardless of how many viewers are watching.
+**Watch party test:**
+- Open browser DevTools → Network tab while playing
+- Filter by `ts` — segments should come from `theater.yourdomain.com`
+- Check `X-Cache-Status` header: `MISS` first viewer, `HIT` second viewer
+- VPS logs: `tail -f /var/log/nginx/access.log`
 
 ---
 
 ## Troubleshooting
 
-### Segments return 403
-- Check that `VPS_RELAY_KEY` in `.env` matches `YOUR_SECRET_KEY_HERE` in nginx config
-- Check browser network tab — the segment URL should have `?key=...` appended
-
-### Segments return 502 Bad Gateway
-- VPS can't reach your Plex server. Check:
-  - Port 32400 is open on your router/firewall for the VPS IP
-  - `YOUR_HOME_PUBLIC_IP` in nginx config is correct
-  - Plex is running and accessible
-
-### Segments return 504 Gateway Timeout
-- Plex is slow to respond. Increase `proxy_read_timeout` in nginx config
-
-### CORS errors in browser console
-- Check that `add_header Access-Control-Allow-Origin * always;` is in the config
-- The `always` keyword is important — without it, nginx only adds headers on 2xx responses
-
-### Cache not working (all requests show MISS)
-- Verify `proxy_buffering` is NOT set to `off` (it must be `on`, which is the default)
-- Check cache directory exists: `ls -la /tmp/hls-cache/`
-- Check nginx error log: `tail -f /var/log/nginx/error.log`
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| Segments 403 | Key mismatch or map not evaluating | Check key in `.env` matches nginx config exactly |
+| Segments 403 from Cloudflare | Cloudflare blocking VPS | Add WAF rule to allow VPS IP |
+| Segments 502 | VPS can't reach Express | Check Cloudflare WAF rule, Express domain DNS |
+| Segments slow (6s+) | Proxying directly to Plex | Use Express proxy (Step 6) — never proxy direct to Plex:32400 |
+| Segments blocked in Discord | Missing URL mapping | Add `/theater → theater.yourdomain.com` in Discord Dev Portal |
+| `nginx -t` fails on map | Key >64 chars | Add `map_hash_bucket_size 128;` before the map block |
 
 ---
 
 ## Rollback
 
-To disable the VPS relay, just remove or comment out `VPS_RELAY_URL` from `.env`
-and restart the server. Segments will route through Express again, P2P re-enables,
-everything works exactly like before.
+Remove `VPS_RELAY_URL` from `.env` and restart. Segments route through Express directly,
+P2P re-enables automatically. Everything works as before.
 
 ---
 
-## Cost Summary
+## Cost
 
 | Item | Cost |
 |------|------|
-| Hetzner CX23 | €3.99/mo |
-| Primary IPv4 | ~€0.50/mo |
-| Domain (if needed) | ~€2/year |
-| **Total** | **~€4.50/mo** |
+| Hetzner CAX11 (ARM) | ~$6.59/mo |
+| Primary IPv4 | ~$0.72/mo |
+| **Total** | **~$7.31/mo** |
 
-Bandwidth used: ~1-1.5 TB/month out of 20 TB included. Overage: €1/TB.
+Bandwidth: ~1-1.5 TB/month out of 20 TB included.
