@@ -8,6 +8,7 @@ A Discord Activity that lets you browse your Plex library and watch movies and T
 - **Synchronized playback** — the host controls play/pause/seek and all viewers stay in sync
 - **Audio & subtitle selection** — pick audio tracks and subtitles before playing
 - **VPS relay** — optional nginx caching proxy offloads segment delivery to a VPS with 1 Gbps, so your home upload isn't the bottleneck
+- **Segment pre-fetching** — server proactively fetches segments from Plex ahead of playback, eliminating throttle-related buffering at cold start
 - **P2P segment sharing** — when no VPS is configured, viewers share HLS segments with each other via WebRTC, reducing server bandwidth
 - **Automatic host promotion** — if the host leaves, the next viewer is promoted so the session continues
 - **Thumbnail caching** — artwork is cached server-side in SQLite for fast browsing
@@ -22,7 +23,7 @@ Discord Voice Channel
        └─ React client (hls.js)
             ├─ VPS relay (nginx cache) — when configured
             ├─ OR: WebRTC ↔ other viewers (P2P segment sharing) — fallback
-            └─ Express backend (WebSocket sync + API proxy)
+            └─ Express backend (WebSocket sync + API proxy + segment pre-fetch cache)
                  └─ Plex Media Server (HLS transcoding)
 ```
 
@@ -34,10 +35,24 @@ When `VPS_RELAY_URL` is configured, HLS segments are served through a VPS with n
 
 ```
 Without VPS:  Home upload = N viewers × bitrate (bottleneck)
-With VPS:     Home upload = 1 stream to VPS (~8 Mbps), VPS handles the rest
+With VPS:     Home upload = 1 stream to VPS (~8-12 Mbps), VPS handles the rest
 ```
 
 This is the recommended setup for watch parties with more than a few viewers. P2P is automatically disabled when VPS relay is active. See [VPS Relay Setup](#vps-relay-optional) below and [docs/vps-relay-setup.md](docs/vps-relay-setup.md) for the full guide.
+
+### Segment Pre-Fetching
+
+The server proactively fetches HLS segments from Plex into an in-memory cache before viewers request them. This eliminates the ~30-second throttle gap that Plex imposes on HTTP segment delivery at the start of a new transcode session.
+
+How it works:
+- After starting a transcode, the server polls the HLS sub-manifest every 2 seconds to discover available segments
+- 3 concurrent workers fetch discovered segments from Plex and cache them in memory
+- When the VPS (or a viewer) requests a segment, Express serves it instantly from cache
+- Cache miss falls through to on-demand Plex fetch (existing behavior)
+- Supports up to 2 concurrent watch party sessions
+- Memory-bounded: max 100 segments per session (~300 MB at 8 Mbps), with eviction prioritizing already-served segments
+
+Combined with timeline updates (which tell Plex the client's playback position), this ensures smooth playback from the very first second.
 
 ### P2P Segment Sharing (Fallback)
 
@@ -51,13 +66,27 @@ When no VPS is configured, viewers in the same watch session automatically form 
 
 P2P reduces bandwidth when multiple people are watching together, but is limited by the host's upload speed. For larger watch parties, the VPS relay is a better solution.
 
+### Transcode Configuration
+
+The server requests HLS transcoding from Plex with these settings:
+
+| Setting | Value | Reason |
+|---------|-------|--------|
+| Video codec | H.264 | Universal browser compatibility |
+| Audio codec | AAC (forced) | Browser-compatible; prevents Plex falling back to MP3 |
+| Max resolution | 1920×1080 | Good quality without excessive bandwidth |
+| Target bitrate | 8 Mbps (peak 12 Mbps) | Balances quality and bandwidth |
+| Segment duration | 3 seconds | Faster cold start — Plex only needs to transcode 3s before the first segment is ready |
+| Location | LAN | Treats the connection as local to avoid WAN throttling |
+| Direct stream audio | Disabled | Forces audio transcode to AAC for consistent browser playback |
+
 ## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
 | Client | React, hls.js, [p2p-media-loader](https://github.com/nicedoc/p2p-media-loader), Discord Embedded App SDK |
 | Server | Express, WebSocket (ws), bittorrent-tracker, better-sqlite3 |
-| Streaming | HLS via Plex transcoder, WebRTC P2P segment sharing |
+| Streaming | HLS via Plex transcoder, server-side segment pre-fetch cache, WebRTC P2P sharing |
 | Infrastructure | Docker, Node.js 22, optional nginx VPS relay |
 
 ## Prerequisites
@@ -143,7 +172,21 @@ Set the resulting `https://xxxx.trycloudflare.com` URL as the URL mapping in you
 
 > **Note:** The tunnel URL changes every restart. Use a [named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-local-tunnel/) for a stable URL.
 
-### 5. Launch
+### 5. Deploy
+
+Build and push the Docker image:
+
+```bash
+npm run deploy
+```
+
+Then on your server (e.g. Unraid):
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+### 6. Launch
 
 1. Join a voice channel in Discord
 2. Click the **Activities** (rocket) icon
@@ -162,7 +205,7 @@ If your home upload is 100 Mb/s and you're running a watch party with 10 viewers
 1. **Create a Hetzner VPS** (CAX11 or CX23) at [hetzner.com/cloud](https://www.hetzner.com/cloud) — Primary IPv4, Ubuntu 24.04
 2. **Install nginx + certbot** and set up SSL for `theater.yourdomain.com`
 3. **Add Discord URL Mapping** — `/theater` → `theater.yourdomain.com` in Discord Developer Portal → Activities → URL Mappings
-4. **Add Cloudflare WAF rule** (if your Express domain uses Cloudflare) — allow VPS IP to bypass WAF
+4. **Add Cloudflare IP Access Rule** (if your Express domain uses Cloudflare) — whitelist VPS IP to bypass Bot Fight Mode
 5. **Configure nginx** to proxy through Express (not directly to Plex — Plex throttles external delivery)
 6. **Add env vars** to `.env`:
    ```env
@@ -178,7 +221,8 @@ See **[docs/vps-relay-setup.md](docs/vps-relay-setup.md)** for the complete ngin
 When `VPS_RELAY_URL` and `VPS_RELAY_KEY` are set:
 - `.ts` segment URLs in HLS manifests are rewritten to `/theater/seg/...` (relative, via Discord's proxy to VPS)
 - VPS nginx validates `?key=`, rewrites to `/api/plex/hls/seg?p=...`, proxies to your Express server
-- Express fetches the segment from Plex locally (unthrottled) and returns it
+- Express checks the segment pre-fetch cache first — if the segment was already fetched ahead of time, it's served instantly
+- On cache miss, Express fetches the segment from Plex locally (unthrottled) and returns it
 - VPS caches the segment for 5 minutes — subsequent viewers get it instantly from cache
 - P2P is automatically disabled (VPS handles fan-out)
 
@@ -206,9 +250,10 @@ Both must be set to activate. If either is missing, falls back to direct Express
 | Video won't play | Check browser console for HLS errors; ensure Plex can transcode |
 | "Session expired" banner | The server restarted and your session is stale — close and reopen the Activity |
 | Tunnel URL changed | Update the URL mapping in Discord Developer Portal |
+| Audio is MP3 instead of AAC | Redeploy — the server now forces AAC via `directStreamAudio=0` and an audio codec limitation |
 | VPS segments return 403 | Key mismatch — check `VPS_RELAY_KEY` in `.env` matches the key in nginx config |
-| VPS segments return 403 (Cloudflare) | Cloudflare blocking VPS — add WAF rule to allow VPS IP |
-| VPS segments return 502 | VPS can't reach Express server — check Cloudflare WAF rule, Express domain DNS |
+| VPS segments return 403 (Cloudflare) | Cloudflare blocking VPS — add IP Access Rule to whitelist VPS IP (not WAF Skip rule) |
+| VPS segments return 502 | VPS can't reach Express server — check Cloudflare IP Access Rule exists, Express domain DNS resolves |
 | VPS causes stuttering | Proxying directly to Plex:32400 — must proxy through Express instead (see docs) |
 | Segments blocked in Discord | Missing URL mapping — add `/theater → theater.yourdomain.com` in Discord Dev Portal |
 

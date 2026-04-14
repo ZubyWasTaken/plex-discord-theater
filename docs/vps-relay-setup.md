@@ -4,7 +4,7 @@ Route HLS segments through a VPS with nginx caching to offload home upload bandw
 
 ## Why
 
-Without VPS: during a watch party with 10 viewers at 8 Mbps, your home upload pushes 80 Mbps — leaving nothing for other Plex users. With VPS: your home uploads one stream (~8 Mbps) to the VPS, and the VPS fans it out to all viewers from its 1 Gbps connection.
+Without VPS: during a watch party with 10 viewers at 8 Mbps, your home upload pushes 80 Mbps — leaving nothing for other Plex users. With VPS: your home uploads one stream (~8-12 Mbps) to the VPS, and the VPS fans it out to all viewers from its 1 Gbps connection.
 
 ## Architecture
 
@@ -19,20 +19,23 @@ WITH VPS:
   Plex (home)
       │ (local, unthrottled)
   Express (home) ──segments──► VPS (nginx cache) ──► Viewer 1
-                               (1st fetch only)  ──► Viewer 2
-                                                 ──► Viewer 3
+    │ (prefetch cache)         (1st fetch only)  ──► Viewer 2
+    │                                            ──► Viewer 3
   Express manifests ──────────────────────────────► All viewers (~2KB each)
   Home upload: 1 stream to VPS
 ```
 
 **Important:** The VPS proxies through your Express server (not directly to Plex).
 Plex throttles external HTTP segment delivery to 1x realtime. Express fetches
-segments from Plex locally (same network), which is unthrottled, and the VPS caches
-the result.
+segments from Plex locally (same network), which is unthrottled. The server also
+pre-fetches segments ahead of playback into an in-memory cache, so many requests
+are served instantly without waiting on Plex at all. The VPS then caches the result
+for subsequent viewers.
 
 What stays on Express (home):
 - All manifests (`master.m3u8`, sub-manifests) — small, need server-side rewriting
-- Session lifecycle (decision, start, stop, ping, auth)
+- Session lifecycle (decision, start, stop, ping, timeline updates, auth)
+- Segment pre-fetch cache — proactively fetches ahead of playback
 
 What routes through VPS:
 - `.ts` segment delivery — the actual video bytes
@@ -139,6 +142,10 @@ curl -I https://watchtogether.yourdomain.com/api/plex/config
 
 ## Step 6: Configure nginx
 
+**Important:** The VPS must also add `proxy_ssl_server_name on;` so that the TLS
+SNI header is sent to Cloudflare. Without this, Cloudflare returns `421 Misdirected
+Request` because it doesn't know which origin to route to.
+
 Use `cat >` to avoid nano encoding issues:
 
 ```bash
@@ -176,11 +183,13 @@ server {
         set $seg_path $uri;
 
         # Rewrite to Express seg endpoint — Express fetches from Plex locally
-        # (unthrottled). Do NOT proxy directly to Plex port 32400 — Plex throttles
-        # external HTTP delivery to 1x realtime, causing stuttering.
+        # (unthrottled) or serves from its pre-fetch cache (instant).
+        # Do NOT proxy directly to Plex port 32400 — Plex throttles external
+        # HTTP delivery to 1x realtime, causing stuttering.
         rewrite ^/seg(.*)$ /api/plex/hls/seg?p=$1 break;
 
         proxy_pass https://YOUR_EXPRESS_DOMAIN;
+        proxy_ssl_server_name on;          # Required for Cloudflare SNI routing
         proxy_ssl_verify off;
         proxy_set_header Host YOUR_EXPRESS_DOMAIN;
         proxy_set_header Authorization "";   # strip — Express handles its own auth
@@ -242,13 +251,17 @@ Rebuild and restart the container.
 ## How It Works (Request Flow)
 
 1. Host starts playback → Express starts Plex transcode → returns manifest
-2. Express rewrites segment URLs to `/theater/seg/video/:/transcode/...?key=SECRET`
-3. hls.js fetches segments via `/theater/seg/...` (relative, same-origin to Discord)
-4. Discord's proxy forwards to `theater.yourdomain.com/seg/video/:/transcode/...?key=SECRET`
-5. VPS nginx validates `?key=`, rewrites to `/api/plex/hls/seg?p=/video/:/transcode/...`
-6. VPS proxies to your Express server (via `YOUR_EXPRESS_DOMAIN`)
-7. Express fetches segment from Plex **locally** (no throttling) and returns it
-8. VPS caches the segment for 5 minutes, serves all subsequent viewers from cache
+2. Express sends initial timeline update (`state=playing`) so Plex unthrottles segment delivery
+3. Express starts the **segment pre-fetcher** — polls sub-manifest every 2s, fetches segments with 3 concurrent workers into memory cache
+4. Express rewrites segment URLs to `/theater/seg/video/:/transcode/...?key=SECRET`
+5. hls.js fetches segments via `/theater/seg/...` (relative, same-origin to Discord)
+6. Discord's proxy forwards to `theater.yourdomain.com/seg/video/:/transcode/...?key=SECRET`
+7. VPS nginx validates `?key=`, rewrites to `/api/plex/hls/seg?p=/video/:/transcode/...`
+8. VPS proxies to your Express server (via `YOUR_EXPRESS_DOMAIN`)
+9. Express checks the pre-fetch cache — **cache hit** serves instantly, **cache miss** fetches from Plex locally (no throttling)
+10. VPS caches the segment for 5 minutes, serves all subsequent viewers from cache
+
+The client sends timeline updates to Plex every 10 seconds with the current playback position. This keeps Plex's transcoder running at full speed and prevents HTTP delivery throttling.
 
 Sub-manifests (`.m3u8` files) are **not** routed through VPS — they stay on Express
 so URL rewriting works correctly (RFC 3986 relative URL resolution drops query params
@@ -276,8 +289,18 @@ curl -I https://YOUR_EXPRESS_DOMAIN/api/plex/config
 **Watch party test:**
 - Open browser DevTools → Network tab while playing
 - Filter by `ts` — segments should come from `theater.yourdomain.com`
+- Segment response times should be consistent 200-700ms (no 5-7s throttle gaps)
 - Check `X-Cache-Status` header: `MISS` first viewer, `HIT` second viewer
-- VPS logs: `tail -f /var/log/nginx/access.log`
+- Server logs should show `[Prefetch]` messages with segment discovery counts
+- VPS logs: `tail -f /var/log/nginx/access.log` — all 200s, sequential segments
+
+**Verify the full pipeline:**
+```bash
+# Watch VPS segment timing live
+ssh root@YOUR_VPS_IP "tail -f /var/log/nginx/access.log"
+```
+
+You should see sequential segments (00000.ts, 00001.ts, ...) all returning 200 with ~4 MB response sizes.
 
 ---
 
@@ -287,9 +310,12 @@ curl -I https://YOUR_EXPRESS_DOMAIN/api/plex/config
 |---------|-------|-----|
 | Segments 403 | Key mismatch or map not evaluating | Check key in `.env` matches nginx config exactly |
 | Segments 403 from Cloudflare (`cf-mitigated: challenge`) | Bot Fight Mode blocking VPS | Add IP Access Rule via API (Step 5b) — WAF Skip rules don't bypass Bot Fight Mode on Free plans |
+| Segments 421 Misdirected Request | Missing SNI header | Add `proxy_ssl_server_name on;` to nginx config (Step 6) |
 | SSL error from VPS to Express | Express DNS set to "DNS only" | Enable Cloudflare Proxy (orange cloud) for Express DNS record (Step 5a) |
 | Segments 502 | VPS can't reach Express | Check IP Access Rule exists, Express domain DNS resolves to Cloudflare IPs |
-| Segments slow (6s+) | Proxying directly to Plex | Use Express proxy (Step 6) — never proxy direct to Plex:32400 |
+| Segments slow (6s+) at start | Pre-fetch cache not active | Check server logs for `[Prefetch] Started` — if missing, manifest fetch may have failed |
+| Segments slow (6s+) steady state | Proxying directly to Plex | Use Express proxy (Step 6) — never proxy direct to Plex:32400 |
+| Audio is MP3 instead of AAC | Old server build | Redeploy — current build forces AAC via audio codec limitation |
 | Segments blocked in Discord | Missing URL mapping | Add `/theater → theater.yourdomain.com` in Discord Dev Portal |
 | `nginx -t` fails on map | Key >64 chars | Add `map_hash_bucket_size 128;` before the map block |
 
