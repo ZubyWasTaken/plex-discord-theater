@@ -6,7 +6,7 @@ import { hlsMasterUrl, pingSession, stopSession, getSessionToken, fetchConfig } 
 import type { PlexItem } from "../lib/api";
 import type { SyncState, SyncActions } from "../hooks/useSync";
 
-const PING_INTERVAL_MS = 30_000;
+const PING_INTERVAL_MS = 10_000; // 10s — matches Plex API recommendation for LAN timeline updates
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const DRIFT_THRESHOLD_S = 2;
 const HEARTBEAT_DRIFT_THRESHOLD_S = 3;
@@ -69,7 +69,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     if (pingIntervalRef.current === null) {
       pingIntervalRef.current = setInterval(() => {
         if (sessionIdRef.current) {
-          pingSession(sessionIdRef.current).catch(console.error);
+          const timeMs = videoRef.current ? videoRef.current.currentTime * 1000 : undefined;
+          pingSession(sessionIdRef.current, timeMs).catch(console.error);
         }
       }, PING_INTERVAL_MS);
     }
@@ -235,30 +236,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
             }
           }
 
-          // Plex throttles segment delivery to ~1x realtime even when segments
-          // are already transcoded. On cold start it delivers ~7 segments fast
-          // (~21s at 3s/segment) then throttles. We need enough buffer so that
-          // by the time playback catches up, Plex has built a comfortable lead.
-          // Wait for 30s of buffer (or 30s timeout as fallback).
-          const BUFFER_BEFORE_PLAY = 30;
-          const tryPlay = () => {
-            if (!mounted) return;
-            const buffered = video.buffered;
-            const bufferedSecs = buffered.length > 0
-              ? buffered.end(buffered.length - 1) - video.currentTime
-              : 0;
-            if (bufferedSecs >= BUFFER_BEFORE_PLAY) {
-              video.play().catch((err) => console.warn("Autoplay prevented:", err));
-            } else {
-              setTimeout(tryPlay, 500);
-            }
-          };
-          tryPlay();
-          setTimeout(() => {
-            if (mounted && video.paused) {
-              video.play().catch((err) => console.warn("Autoplay prevented:", err));
-            }
-          }, 30000);
+          // Pre-fetch cache ensures segments arrive instantly — play as soon as manifest is parsed
+          video.play().catch((err) => console.warn("Autoplay prevented:", err));
 
           // Host: broadcast play with sessionId when manifest is ready
           if (isHostRef.current) {
@@ -323,11 +302,17 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         return;
       }
 
-      // Only the session owner pings to keep the transcode alive
+      // Only the session owner pings to keep the transcode alive.
+      // Fire immediately to send the first timeline update ASAP — Plex
+      // throttles HTTP segment delivery until it knows our playback position.
       if (sessionOwner) {
+        if (sessionIdRef.current) {
+          pingSession(sessionIdRef.current, 0).catch(console.error);
+        }
         pingIntervalRef.current = setInterval(() => {
           if (sessionIdRef.current) {
-            pingSession(sessionIdRef.current).catch(console.error);
+            const timeMs = videoRef.current ? videoRef.current.currentTime * 1000 : undefined;
+            pingSession(sessionIdRef.current, timeMs).catch(console.error);
           }
         }, PING_INTERVAL_MS);
       }
