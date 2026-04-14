@@ -315,7 +315,7 @@ You should see sequential segments (00000.ts, 00001.ts, ...) all returning 200 w
 | Segments 502 | VPS can't reach Express | Check IP Access Rule exists, Express domain DNS resolves to Cloudflare IPs |
 | Segments slow (6s+) at start | Pre-fetch cache not active | Check server logs for `[Prefetch] Started` — if missing, manifest fetch may have failed |
 | Segments slow (6s+) steady state | Proxying directly to Plex | Use Express proxy (Step 6) — never proxy direct to Plex:32400 |
-| Audio is MP3 instead of AAC | Old server build | Redeploy — current build forces AAC via audio codec limitation |
+| Audio is MP3 instead of AAC | Normal for incompatible source codecs (TrueHD, DTS) | MP3 works fine in browsers and Discord — no action needed |
 | Segments blocked in Discord | Missing URL mapping | Add `/theater → theater.yourdomain.com` in Discord Dev Portal |
 | `nginx -t` fails on map | Key >64 chars | Add `map_hash_bucket_size 128;` before the map block |
 

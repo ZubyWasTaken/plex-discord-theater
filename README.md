@@ -73,12 +73,12 @@ The server requests HLS transcoding from Plex with these settings:
 | Setting | Value | Reason |
 |---------|-------|--------|
 | Video codec | H.264 | Universal browser compatibility |
-| Audio codec | AAC (forced) | Browser-compatible; prevents Plex falling back to MP3 |
+| Audio codec | AAC preferred, MP3 fallback | Plex direct-streams compatible audio; transcodes to MP3 for incompatible codecs like TrueHD |
 | Max resolution | 1920×1080 | Good quality without excessive bandwidth |
 | Target bitrate | 8 Mbps (peak 12 Mbps) | Balances quality and bandwidth |
 | Segment duration | 3 seconds | Faster cold start — Plex only needs to transcode 3s before the first segment is ready |
 | Location | LAN | Treats the connection as local to avoid WAN throttling |
-| Direct stream audio | Disabled | Forces audio transcode to AAC for consistent browser playback |
+| Direct stream audio | Enabled | Passes through compatible audio (e.g. AAC) without re-encoding; transcodes incompatible codecs (e.g. TrueHD) |
 
 ## Tech Stack
 
@@ -250,7 +250,7 @@ Both must be set to activate. If either is missing, falls back to direct Express
 | Video won't play | Check browser console for HLS errors; ensure Plex can transcode |
 | "Session expired" banner | The server restarted and your session is stale — close and reopen the Activity |
 | Tunnel URL changed | Update the URL mapping in Discord Developer Portal |
-| Audio is MP3 instead of AAC | Redeploy — the server now forces AAC via `directStreamAudio=0` and an audio codec limitation |
+| Audio is MP3 instead of AAC | Normal for incompatible source codecs (TrueHD, DTS) — MP3 works fine in browsers and Discord |
 | VPS segments return 403 | Key mismatch — check `VPS_RELAY_KEY` in `.env` matches the key in nginx config |
 | VPS segments return 403 (Cloudflare) | Cloudflare blocking VPS — add IP Access Rule to whitelist VPS IP (not WAF Skip rule) |
 | VPS segments return 502 | VPS can't reach Express server — check Cloudflare IP Access Rule exists, Express domain DNS resolves |
