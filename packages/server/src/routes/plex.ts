@@ -951,8 +951,9 @@ router.get(
         activeTranscodeKeys.add(plexKeyMatch[1]);
         allKnownPlexKeys.set(plexKeyMatch[1], Date.now());
         console.log("[HLS] Plex transcode key:", plexKeyMatch[1].substring(0, 8), "for session:", sessionId.substring(0, 8));
-      // Start pre-fetching segments to absorb Plex's HTTP throttle
-      startPrefetch(sessionId, plexKeyMatch[1]);
+
+        // Start pre-fetching segments to absorb Plex's HTTP throttle
+        startPrefetch(sessionId, plexKeyMatch[1]);
       } else {
         console.error("[HLS] FATAL: Could not extract Plex transcode key from manifest for session:",
           sessionId.substring(0, 8), "— aborting session to prevent phantom state");

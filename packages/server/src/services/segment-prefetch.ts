@@ -15,6 +15,7 @@ interface CachedSegment {
 }
 
 interface PrefetchSession {
+  sessionId: string;
   plexKey: string;
   pollTimer: ReturnType<typeof setInterval> | null;
   abortController: AbortController;
@@ -66,16 +67,15 @@ function parseSegmentPaths(m3u8Text: string, baseDir: string): string[] {
 function evictIfNeeded(session: PrefetchSession): void {
   if (session.segmentCache.size <= EVICTION_THRESHOLD) return;
 
-  if (session.segmentCache.size > EVICTION_THRESHOLD) {
-    const served: [string, CachedSegment][] = [];
-    for (const [path, entry] of session.segmentCache) {
-      if (entry.served) served.push([path, entry]);
-    }
-    served.sort((a, b) => a[1].cachedAt - b[1].cachedAt);
-    for (const [path] of served) {
-      session.segmentCache.delete(path);
-      if (session.segmentCache.size <= EVICTION_THRESHOLD) return;
-    }
+  // First pass: evict served segments (oldest first)
+  const served: [string, CachedSegment][] = [];
+  for (const [path, entry] of session.segmentCache) {
+    if (entry.served) served.push([path, entry]);
+  }
+  served.sort((a, b) => a[1].cachedAt - b[1].cachedAt);
+  for (const [path] of served) {
+    session.segmentCache.delete(path);
+    if (session.segmentCache.size <= EVICTION_THRESHOLD) return;
   }
 
   if (session.segmentCache.size >= MAX_CACHE_SIZE) {
@@ -140,19 +140,13 @@ function drainQueue(session: PrefetchSession): void {
     session.fetchQueue.length > 0 &&
     !session.abortController.signal.aborted
   ) {
-    fetchWorker(session);
+    fetchWorker(session).catch((err) => {
+      console.error("[Prefetch] Unexpected worker error:", err);
+    });
   }
 }
 
 // ─── Sub-Manifest Polling ───────────────────────────────────────
-
-/** Find the sessionId for a PrefetchSession (for logging/cleanup). */
-function findSessionId(session: PrefetchSession): string {
-  for (const [id, s] of sessions) {
-    if (s === session) return id;
-  }
-  return "unknown";
-}
 
 /**
  * Poll the sub-manifest to discover new segments and queue them for fetching.
@@ -169,7 +163,7 @@ async function pollSubManifest(session: PrefetchSession): Promise<void> {
       if (res.status === 404) {
         console.log("[Prefetch] Sub-manifest 404 — transcode may be dead, stopping poll for",
           session.plexKey.substring(0, 8));
-        stopPrefetch(findSessionId(session));
+        stopPrefetch(session.sessionId);
       }
       res.body?.cancel().catch(() => {});
       return;
@@ -216,6 +210,7 @@ export function startPrefetch(sessionId: string, plexKey: string): void {
   }
 
   const session: PrefetchSession = {
+    sessionId,
     plexKey,
     pollTimer: null,
     abortController: new AbortController(),
