@@ -847,7 +847,7 @@ router.get(
         peakBitrate: "12000",
         videoQuality: "99",
         autoAdjustQuality: "1",
-        location: "wan",
+        location: "lan",
         mediaBufferSize: "102400",
         // Shorter segments transcode faster individually, so Plex can start
         // delivering them sooner on cold start. At 3s segments, Plex only needs
