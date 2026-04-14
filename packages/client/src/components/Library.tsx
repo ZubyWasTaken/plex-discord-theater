@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Search } from "./Search";
 import { FilterBar } from "./FilterBar";
 import { MovieCard } from "./MovieCard";
+import { SkeletonGrid } from "./SkeletonGrid";
 import {
   fetchSections,
   fetchSectionItems,
@@ -169,9 +170,7 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
 
 
       {loading ? (
-        <div style={styles.loadingWrap}>
-          <div style={styles.spinner} />
-        </div>
+        <SkeletonGrid />
       ) : displayItems.length === 0 ? (
         <div style={styles.empty}>No items found</div>
       ) : (
@@ -237,19 +236,6 @@ const styles: Record<string, React.CSSProperties> = {
     gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
     gap: "14px",
     padding: "16px 24px",
-  },
-  loadingWrap: {
-    display: "flex",
-    justifyContent: "center",
-    padding: "64px",
-  },
-  spinner: {
-    width: "32px",
-    height: "32px",
-    border: "3px solid rgba(255,255,255,0.1)",
-    borderTopColor: "#e5a00d",
-    borderRadius: "50%",
-    animation: "spin 0.8s linear infinite",
   },
   empty: {
     textAlign: "center",
