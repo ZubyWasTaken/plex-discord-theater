@@ -129,6 +129,15 @@ export function requireAuth(
   res: Response,
   next: NextFunction,
 ): void {
+  // VPS relay key bypass — segments proxied from the VPS have ?key= instead
+  // of a Bearer token. The key is validated here so the seg endpoint doesn't
+  // need its own auth logic. Only works when VPS_RELAY_KEY is configured.
+  const vpsKey = process.env.VPS_RELAY_KEY;
+  if (vpsKey && typeof req.query.key === "string" && req.query.key === vpsKey) {
+    next();
+    return;
+  }
+
   const header = req.headers.authorization;
   const token = header?.startsWith("Bearer ")
     ? header.slice(7)

@@ -89,19 +89,53 @@ generates relative segment URLs (`/theater/seg/...`) which Discord's proxy forwa
 to `theater.yourdomain.com`. Without this mapping, browsers block cross-origin
 segment fetches.
 
-## Step 5: Cloudflare WAF (if Express domain uses Cloudflare)
+## Step 5: Cloudflare Configuration (if Express domain uses Cloudflare)
 
-If your Express server domain (e.g. `watchtogether.yourdomain.com`) is proxied
-through Cloudflare, you must whitelist the VPS IP or Cloudflare will block the
-VPS's segment proxy requests.
+If your Express server domain (e.g. `watchtogether.yourdomain.com`) uses
+Cloudflare, two things must be configured:
 
-In Cloudflare → **Security → WAF → Custom Rules**, create:
-- **Name:** Allow VPS relay
-- **Field:** IP Source Address | **Operator:** equals | **Value:** YOUR_VPS_IP
-- **Action:** Skip
-- **Check all boxes:** All remaining custom rules, All rate limiting rules, All managed rules, All Super Bot Fight Mode Rules
+### 5a. Enable Cloudflare Proxy (Required)
 
-Save the rule.
+The DNS record for your Express domain **must** be set to **Proxied** (orange
+cloud), not "DNS only". Without proxying, the origin's Cloudflare Origin
+Certificate won't be trusted by the VPS's curl/nginx, causing SSL errors.
+
+In Cloudflare → **DNS** → find the `watchtogether` record → set to **Proxied**.
+
+### 5b. Whitelist the VPS IP (Required)
+
+Cloudflare's Bot Fight Mode blocks server-to-server requests (like the VPS's
+nginx proxying segments). On **Free plans**, WAF custom "Skip" rules do **not**
+bypass Bot Fight Mode — you must use an **IP Access Rule** instead.
+
+> **Why not a WAF Skip rule?** WAF Skip rules can check all the boxes (custom
+> rules, rate limiting, managed rules, Super Bot Fight Mode Rules) but on Free
+> plans, Bot Fight Mode challenges still fire. The `cf-mitigated: challenge`
+> response blocks curl/nginx because they can't solve JavaScript challenges.
+> IP Access Rules run *before* Bot Fight Mode and fully bypass it.
+
+Create the IP Access Rule via the Cloudflare API:
+
+```bash
+# Get your Zone ID from Cloudflare dashboard → Overview → right sidebar → API section
+curl -X POST "https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/firewall/access_rules/rules" \
+  -H "X-Auth-Email: YOUR_CLOUDFLARE_EMAIL" \
+  -H "X-Auth-Key: YOUR_GLOBAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{"mode":"whitelist","configuration":{"target":"ip","value":"YOUR_VPS_IP"},"notes":"VPS relay for watch parties"}'
+```
+
+Your Global API Key is at: https://dash.cloudflare.com/profile/api-tokens →
+**Global API Key** → View.
+
+Expected response: `"success": true` with the rule ID.
+
+Verify it works from the VPS:
+
+```bash
+curl -I https://watchtogether.yourdomain.com/api/plex/config
+# Should return 401 (Express auth), NOT 403 (Cloudflare block)
+```
 
 ## Step 6: Configure nginx
 
@@ -235,7 +269,8 @@ curl -o /dev/null -w "%{http_code}" "https://theater.yourdomain.com/seg/video/te
 
 # 3. Express connectivity (from VPS)
 curl -I https://YOUR_EXPRESS_DOMAIN/api/plex/config
-# → 200 (requires Cloudflare WAF rule if Express uses Cloudflare)
+# → 401 (Express auth required — means VPS reached Express through Cloudflare)
+# If 403 with cf-mitigated header → IP Access Rule not set up (see Step 5b)
 ```
 
 **Watch party test:**
@@ -251,8 +286,9 @@ curl -I https://YOUR_EXPRESS_DOMAIN/api/plex/config
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | Segments 403 | Key mismatch or map not evaluating | Check key in `.env` matches nginx config exactly |
-| Segments 403 from Cloudflare | Cloudflare blocking VPS | Add WAF rule to allow VPS IP |
-| Segments 502 | VPS can't reach Express | Check Cloudflare WAF rule, Express domain DNS |
+| Segments 403 from Cloudflare (`cf-mitigated: challenge`) | Bot Fight Mode blocking VPS | Add IP Access Rule via API (Step 5b) — WAF Skip rules don't bypass Bot Fight Mode on Free plans |
+| SSL error from VPS to Express | Express DNS set to "DNS only" | Enable Cloudflare Proxy (orange cloud) for Express DNS record (Step 5a) |
+| Segments 502 | VPS can't reach Express | Check IP Access Rule exists, Express domain DNS resolves to Cloudflare IPs |
 | Segments slow (6s+) | Proxying directly to Plex | Use Express proxy (Step 6) — never proxy direct to Plex:32400 |
 | Segments blocked in Discord | Missing URL mapping | Add `/theater → theater.yourdomain.com` in Discord Dev Portal |
 | `nginx -t` fails on map | Key >64 chars | Add `map_hash_bucket_size 128;` before the map block |
