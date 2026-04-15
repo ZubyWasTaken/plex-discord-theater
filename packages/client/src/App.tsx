@@ -6,6 +6,7 @@ import { MovieDetail } from "./components/MovieDetail";
 import { ShowDetail } from "./components/ShowDetail";
 import { SeasonDetail } from "./components/SeasonDetail";
 import { Player } from "./components/Player";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import type { PlexItem } from "./lib/api";
 
 type View =
@@ -251,14 +252,37 @@ export function App() {
       )}
 
       {view.kind === "player" && (
-        <Player
-          item={view.item}
-          isHost={effectiveIsHost}
-          subtitles={view.subtitles}
-          onBack={popView}
-          syncState={syncState}
-          syncActions={syncActions}
-        />
+        <ErrorBoundary
+          fallback={
+            <div style={{
+              display: "flex", flexDirection: "column", alignItems: "center",
+              justifyContent: "center", minHeight: "100vh", gap: "16px",
+              background: "#000", color: "#f0f0f0", fontFamily: "DM Sans, sans-serif",
+            }}>
+              <p style={{ fontSize: "16px", color: "#e74c3c" }}>Playback error</p>
+              <button
+                onClick={popView}
+                style={{
+                  padding: "10px 24px", borderRadius: "8px", border: "none",
+                  background: "#e5a00d", color: "#000", fontSize: "14px",
+                  fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                }}
+              >
+                Go Back
+              </button>
+            </div>
+          }
+          onReset={popView}
+        >
+          <Player
+            item={view.item}
+            isHost={effectiveIsHost}
+            subtitles={view.subtitles}
+            onBack={popView}
+            syncState={syncState}
+            syncActions={syncActions}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );
