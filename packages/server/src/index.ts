@@ -7,6 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import discordRoutes, { closeInstanceDb } from "./routes/discord.js";
 import plexRoutes from "./routes/plex.js";
+import progressRoutes from "./routes/progress.js";
 import { requireAuth, closeSessionDb } from "./middleware/auth.js";
 import * as thumbCache from "./services/thumb-cache.js";
 import { attachWebSocketServer, closeWebSocketServer } from "./services/sync.js";
@@ -108,6 +109,7 @@ app.use("/api", (req, res, next) => {
 
 app.use("/api", discordRoutes);
 app.use("/api/plex", requireAuth, plexRoutes);
+app.use("/api/progress", requireAuth, progressRoutes);
 
 const clientDist = path.resolve(__dirname, "../../client/dist");
 app.use(express.static(clientDist));

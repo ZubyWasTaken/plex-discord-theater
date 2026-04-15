@@ -3,7 +3,7 @@ import Hls from "hls.js";
 import { HlsJsP2PEngine } from "p2p-media-loader-hlsjs";
 import { Controls } from "./Controls";
 import { TrackSwitcher } from "./TrackSwitcher";
-import { hlsMasterUrl, pingSession, stopSession, getSessionToken, fetchConfig, setStreams } from "../lib/api";
+import { hlsMasterUrl, pingSession, stopSession, getSessionToken, fetchConfig, setStreams, saveProgress } from "../lib/api";
 import type { PlexItem } from "../lib/api";
 import type { SyncState, SyncActions } from "../hooks/useSync";
 
@@ -45,6 +45,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const networkRetryRef = useRef(0);
   const pendingStopRef = useRef<Promise<void> | null>(null);
   const seekOffsetRef = useRef(0);
+  const lastProgressSaveRef = useRef(0);
+  const PROGRESS_SAVE_INTERVAL_MS = 30_000;
 
   // Stable refs so the HLS effect doesn't re-run when these change
   const syncActionsRef = useRef(syncActions);
@@ -401,6 +403,23 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           const v = videoRef.current;
           if (v && v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             syncActionsRef.current?.sendHeartbeat(v.currentTime, !v.paused);
+
+            // Save progress every 30s
+            const now = Date.now();
+            if (now - lastProgressSaveRef.current >= PROGRESS_SAVE_INTERVAL_MS) {
+              lastProgressSaveRef.current = now;
+              saveProgress({
+                ratingKey: item.ratingKey,
+                title: item.title,
+                thumb: item.thumb,
+                type: item.type,
+                parentTitle: item.parentTitle,
+                parentIndex: item.parentIndex,
+                index: item.index,
+                position: v.currentTime,
+                duration: v.duration || 0,
+              }).catch(() => {});
+            }
           }
         }, HEARTBEAT_INTERVAL_MS);
       }
