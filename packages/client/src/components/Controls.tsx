@@ -224,7 +224,7 @@ export function Controls({
           onClick={seek}
           onMouseEnter={() => setHoveringProgress(true)}
           onMouseLeave={() => setHoveringProgress(false)}
-          style={styles.progressHit}
+          style={{ ...styles.progressHit, cursor: isHost ? "pointer" : "default" }}
         >
           <div style={{ ...styles.progressTrack, height: barHeight, transition: "height 0.15s ease" }}>
             <div style={{ ...styles.progressBuffer, width: `${buffered}%` }} />
@@ -240,7 +240,7 @@ export function Controls({
                 borderRadius: "50%",
                 background: "#e5a00d",
                 boxShadow: "0 0 8px rgba(229,160,13,0.5)",
-                opacity: hoveringProgress ? 1 : 0,
+                opacity: isHost && hoveringProgress ? 1 : 0,
                 transition: "opacity 0.15s ease",
                 pointerEvents: "none",
               }}
@@ -251,21 +251,19 @@ export function Controls({
         <div style={styles.controls}>
           <div style={styles.left}>
             {isHost && (
-              <button onClick={togglePlay} style={styles.playBtn}>
-                {playing ? (
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                    <rect x="3" y="2" width="4" height="12" rx="1"/>
-                    <rect x="9" y="2" width="4" height="12" rx="1"/>
-                  </svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M4 2.5L13 8L4 13.5V2.5Z"/>
-                  </svg>
-                )}
-              </button>
-            )}
-            {isHost && (
               <>
+                <button onClick={togglePlay} style={styles.playBtn}>
+                  {playing ? (
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                      <rect x="3" y="2" width="4" height="12" rx="1"/>
+                      <rect x="9" y="2" width="4" height="12" rx="1"/>
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M4 2.5L13 8L4 13.5V2.5Z"/>
+                    </svg>
+                  )}
+                </button>
                 <button onClick={skipBack} style={styles.skipBtn} title="Back 10s">
                   <span style={{ fontSize: 16 }}>{"\u21BA"}</span>
                   <span style={{ fontSize: 11 }}>10</span>
