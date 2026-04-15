@@ -8,6 +8,7 @@ import { SeasonDetail } from "./components/SeasonDetail";
 import { Player } from "./components/Player";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import type { PlexItem } from "./lib/api";
+import type { QueueItem } from "./hooks/useSync";
 
 type View =
   | { kind: "library" }
@@ -164,6 +165,26 @@ export function App() {
     emitBrowse(label);
   }, [pushView, emitBrowse]);
 
+  const handlePlayNext = useCallback((queueItem: QueueItem) => {
+    const playerView: View = {
+      kind: "player",
+      item: {
+        ratingKey: queueItem.ratingKey,
+        title: queueItem.title,
+        type: queueItem.type,
+        thumb: queueItem.thumb,
+        parentTitle: queueItem.parentTitle,
+        parentIndex: queueItem.parentIndex,
+        index: queueItem.index,
+      },
+      subtitles: queueItem.subtitles,
+    };
+    setViewStack((s) => {
+      const base = s[s.length - 1]?.kind === "player" ? s.slice(0, -1) : s;
+      return [...base, playerView];
+    });
+  }, []);
+
   if (error) {
     return (
       <div style={styles.center}>
@@ -264,6 +285,9 @@ export function App() {
           show={view.show}
           onSelectEpisode={handleSeasonEpisode}
           onBack={popView}
+          isHost={effectiveIsHost}
+          isPlaying={!!syncState.ratingKey}
+          onAddToQueue={effectiveIsHost ? (qi) => syncActions.sendQueueAdd(qi) : undefined}
         />
       )}
 
@@ -273,6 +297,8 @@ export function App() {
           isHost={effectiveIsHost}
           onPlay={handlePlay}
           onBack={popView}
+          isPlaying={!!syncState.ratingKey}
+          onAddToQueue={effectiveIsHost ? (qi) => syncActions.sendQueueAdd(qi) : undefined}
         />
       )}
 
@@ -306,6 +332,7 @@ export function App() {
             onBack={popView}
             syncState={syncState}
             syncActions={syncActions}
+            onPlayNext={handlePlayNext}
           />
         </ErrorBoundary>
       )}

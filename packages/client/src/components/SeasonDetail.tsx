@@ -1,12 +1,16 @@
 import { useState, useEffect } from "react";
 import { fetchChildren, getSessionToken, type PlexItem } from "../lib/api";
 import { SkeletonBlock } from "./SkeletonBlock";
+import type { QueueItem } from "../hooks/useSync";
 
 interface SeasonDetailProps {
   season: PlexItem;
   show: PlexItem;
   onSelectEpisode: (episode: PlexItem) => void;
   onBack: () => void;
+  isHost?: boolean;
+  isPlaying?: boolean;
+  onAddToQueue?: (item: QueueItem) => void;
 }
 
 function authUrl(url: string, w?: number, h?: number): string {
@@ -28,7 +32,7 @@ function fmtDuration(ms: number): string {
     : `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDetailProps) {
+export function SeasonDetail({ season, show, onSelectEpisode, onBack, isHost, isPlaying, onAddToQueue }: SeasonDetailProps) {
   const [episodes, setEpisodes] = useState<PlexItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
@@ -111,6 +115,32 @@ export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDe
                   </div>
                   {ep.duration && (
                     <div style={styles.durationBadge}>{fmtDuration(ep.duration)}</div>
+                  )}
+                  {isHost && isPlaying && onAddToQueue && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAddToQueue({
+                          ratingKey: ep.ratingKey,
+                          title: ep.title,
+                          type: ep.type,
+                          thumb: ep.thumb,
+                          subtitles: false,
+                          parentTitle: show.title,
+                          parentIndex: season.index,
+                          index: ep.index,
+                        });
+                      }}
+                      style={{
+                        padding: "4px 10px", borderRadius: "6px",
+                        border: "1px solid rgba(229,160,13,0.4)", background: "rgba(0,0,0,0.6)",
+                        color: "#e5a00d", fontSize: "11px", fontWeight: 600,
+                        cursor: "pointer", fontFamily: "inherit",
+                        position: "absolute", bottom: "8px", right: "8px",
+                      }}
+                    >
+                      + Queue
+                    </button>
                   )}
                 </div>
                 <div style={styles.episodeInfo}>

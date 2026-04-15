@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { fetchMeta, setStreams, getSessionToken, type PlexItem, type PlexMeta } from "../lib/api";
 import { SkeletonBlock } from "./SkeletonBlock";
+import type { QueueItem } from "../hooks/useSync";
 
 interface MovieDetailProps {
   item: PlexItem;
   isHost: boolean;
   onPlay: (item: PlexItem, subtitles: boolean) => void;
   onBack: () => void;
+  isPlaying?: boolean;
+  onAddToQueue?: (item: QueueItem) => void;
 }
 
 function authUrl(url: string): string {
@@ -24,7 +27,7 @@ function formatDuration(ms: number | undefined): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-export function MovieDetail({ item, isHost, onPlay, onBack }: MovieDetailProps) {
+export function MovieDetail({ item, isHost, onPlay, onBack, isPlaying, onAddToQueue }: MovieDetailProps) {
   const [meta, setMeta] = useState<PlexMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -198,12 +201,35 @@ export function MovieDetail({ item, isHost, onPlay, onBack }: MovieDetailProps) 
               {/* Play / Waiting */}
               <div style={styles.actions}>
                 {isHost ? (
-                  <button onClick={handlePlay} style={styles.playBtn}>
-                    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" style={{ marginRight: 8 }}>
-                      <path d="M5 3.5L18 11L5 18.5V3.5Z" fill="currentColor"/>
-                    </svg>
-                    Play
-                  </button>
+                  <>
+                    <button onClick={handlePlay} style={styles.playBtn}>
+                      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" style={{ marginRight: 8 }}>
+                        <path d="M5 3.5L18 11L5 18.5V3.5Z" fill="currentColor"/>
+                      </svg>
+                      Play
+                    </button>
+                    {isPlaying && onAddToQueue && (
+                      <button
+                        onClick={() => {
+                          if (!meta) return;
+                          onAddToQueue({
+                            ratingKey: item.ratingKey,
+                            title: item.title,
+                            type: item.type,
+                            thumb: item.thumb,
+                            subtitles: selectedSubtitle != null,
+                            parentTitle: item.parentTitle,
+                            parentIndex: item.parentIndex,
+                            index: item.index,
+                            year: item.year,
+                          });
+                        }}
+                        style={styles.queueBtn}
+                      >
+                        Add to Queue
+                      </button>
+                    )}
+                  </>
                 ) : (
                   <p style={styles.waitingText}>Waiting for the host to start playback...</p>
                 )}
@@ -405,6 +431,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   actions: {
     marginTop: "28px",
+    display: "flex",
+    gap: "12px",
+    alignItems: "center",
+    flexWrap: "wrap",
   },
   playBtn: {
     display: "inline-flex",
@@ -425,6 +455,12 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#888",
     fontSize: "15px",
     fontStyle: "italic",
+  },
+  queueBtn: {
+    padding: "10px 20px", borderRadius: "8px",
+    border: "1px solid rgba(229,160,13,0.4)", background: "transparent",
+    color: "#e5a00d", fontSize: "14px", fontWeight: 600,
+    cursor: "pointer", fontFamily: "inherit",
   },
   errorText: {
     color: "#e74c3c",

@@ -3,6 +3,18 @@ import { getSessionToken } from "../lib/api";
 
 const MAX_RECONNECT_ATTEMPTS = 20;
 
+export interface QueueItem {
+  ratingKey: string;
+  title: string;
+  type: string;
+  thumb: string | null;
+  subtitles: boolean;
+  parentTitle?: string;
+  parentIndex?: number;
+  index?: number;
+  year?: number;
+}
+
 export interface SyncState {
   connected: boolean;
   ratingKey: string | null;
@@ -24,6 +36,7 @@ export interface SyncState {
   reconnectFailed: boolean;
   /** What the host is currently browsing, or null if playing/idle */
   browseContext: string | null;
+  queue: QueueItem[];
 }
 
 export interface SyncActions {
@@ -34,6 +47,10 @@ export interface SyncActions {
   sendStop: () => void;
   sendHeartbeat: (position: number, playing: boolean) => void;
   sendBrowse: (context: string) => void;
+  sendQueueAdd: (item: QueueItem) => void;
+  sendQueueRemove: (ratingKey: string) => void;
+  sendQueueClear: () => void;
+  sendQueueReorder: (queue: QueueItem[]) => void;
 }
 
 interface UseSyncOptions {
@@ -57,6 +74,7 @@ const INITIAL_STATE: SyncState = {
   authFailed: false,
   reconnectFailed: false,
   browseContext: null,
+  queue: [],
 };
 
 export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
@@ -85,6 +103,10 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
       sendHeartbeat: (position: number, playing: boolean) =>
         send({ type: "heartbeat", position, playing }),
       sendBrowse: (context: string) => send({ type: "browse", context }),
+      sendQueueAdd: (item: QueueItem) => send({ type: "queue-add", item }),
+      sendQueueRemove: (ratingKey: string) => send({ type: "queue-remove", ratingKey }),
+      sendQueueClear: () => send({ type: "queue-clear" }),
+      sendQueueReorder: (queue: QueueItem[]) => send({ type: "queue-reorder", queue }),
     }),
     [send],
   );
@@ -138,6 +160,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               commandSeq: prev.commandSeq + 1,
               lastCommandAt: (msg.lastCommandAt as number) ?? Date.now(),
               browseContext: (msg.browseContext as string) || null,
+              queue: (msg.queue as QueueItem[]) || [],
             }));
             break;
           case "play":
@@ -187,6 +210,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               position: 0,
               commandSeq: prev.commandSeq + 1,
               browseContext: null,
+              queue: [],
             }));
             break;
           case "heartbeat":
@@ -201,6 +225,12 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
             setState((prev) => ({
               ...prev,
               browseContext: (msg.context as string) || null,
+            }));
+            break;
+          case "queue-updated":
+            setState((prev) => ({
+              ...prev,
+              queue: (msg.queue as QueueItem[]) || [],
             }));
             break;
           case "host-disconnected":

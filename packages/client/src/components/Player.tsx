@@ -3,9 +3,11 @@ import Hls from "hls.js";
 import { HlsJsP2PEngine } from "p2p-media-loader-hlsjs";
 import { Controls } from "./Controls";
 import { TrackSwitcher } from "./TrackSwitcher";
+import { QueuePanel } from "./QueuePanel";
+import { UpNext } from "./UpNext";
 import { hlsMasterUrl, pingSession, stopSession, getSessionToken, fetchConfig, setStreams, saveProgress } from "../lib/api";
 import type { PlexItem } from "../lib/api";
-import type { SyncState, SyncActions } from "../hooks/useSync";
+import type { SyncState, SyncActions, QueueItem } from "../hooks/useSync";
 
 const PING_INTERVAL_MS = 10_000; // 10s — matches Plex API recommendation for LAN timeline updates
 const HEARTBEAT_INTERVAL_MS = 5_000;
@@ -21,9 +23,10 @@ interface PlayerProps {
   onBack: () => void;
   syncState?: SyncState;
   syncActions?: SyncActions;
+  onPlayNext?: (item: QueueItem) => void;
 }
 
-export function Player({ item, isHost, subtitles, onBack, syncState, syncActions }: PlayerProps) {
+export function Player({ item, isHost, subtitles, onBack, syncState, syncActions, onPlayNext }: PlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -35,6 +38,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const [buffering, setBuffering] = useState(true);
   const [showTrackSwitcher, setShowTrackSwitcher] = useState(false);
   const [trackSwitching, setTrackSwitching] = useState<"audio" | "subtitle" | null>(null);
+  const [showQueuePanel, setShowQueuePanel] = useState(false);
+  const [showUpNext, setShowUpNext] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const recoveryAttemptRef = useRef(0);
   const recoveryPositionRef = useRef(0);
@@ -601,6 +606,43 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     setRetryKey((k) => k + 1);
   }, []);
 
+  const advanceQueue = useCallback(() => {
+    const queue = syncStateRef.current?.queue;
+    if (!queue || queue.length === 0) return;
+    const next = queue[0];
+    syncActionsRef.current?.sendQueueRemove(next.ratingKey);
+    onPlayNext?.(next);
+  }, [onPlayNext]);
+
+  // Auto-advance on video ended
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !isHost) return;
+    const onEnded = () => {
+      const queue = syncStateRef.current?.queue;
+      if (queue && queue.length > 0) {
+        advanceQueue();
+      }
+    };
+    video.addEventListener("ended", onEnded);
+    return () => video.removeEventListener("ended", onEnded);
+  }, [isHost, advanceQueue]);
+
+  // Show "Up Next" banner when within 30s of the end (host only)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !isHost) return;
+    const onTime = () => {
+      const queue = syncStateRef.current?.queue;
+      const remaining = (video.duration || 0) - video.currentTime;
+      if (queue && queue.length > 0 && remaining <= 30 && remaining > 0 && video.duration > 60) {
+        setShowUpNext(true);
+      }
+    };
+    video.addEventListener("timeupdate", onTime);
+    return () => video.removeEventListener("timeupdate", onTime);
+  }, [isHost]);
+
   // Build rich display title for Controls top bar
   const displayTitle = item.parentTitle
     ? `${item.parentTitle} \u2014 S${item.parentIndex ?? "?"}E${item.index ?? "?"} \u00b7 ${item.title}`
@@ -725,12 +767,30 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         onSyncSeek={isHost ? syncActions?.sendSeek : undefined}
         onSeekRestart={isHost ? handleSeekRestart : undefined}
         onOpenTrackSwitcher={isHost ? () => setShowTrackSwitcher(true) : undefined}
+        queueCount={syncState?.queue?.length}
+        onOpenQueue={isHost ? () => setShowQueuePanel(true) : undefined}
       />
       {showTrackSwitcher && (
         <TrackSwitcher
           ratingKey={item.ratingKey}
           onClose={() => setShowTrackSwitcher(false)}
           onTrackChange={handleTrackChange}
+        />
+      )}
+      {showQueuePanel && syncState && (
+        <QueuePanel
+          queue={syncState.queue}
+          onRemove={(rk) => syncActions?.sendQueueRemove(rk)}
+          onClear={() => syncActions?.sendQueueClear()}
+          onReorder={(q) => syncActions?.sendQueueReorder(q)}
+          onClose={() => setShowQueuePanel(false)}
+        />
+      )}
+      {showUpNext && isHost && syncState?.queue?.[0] && (
+        <UpNext
+          item={syncState.queue[0]}
+          onPlayNow={() => { setShowUpNext(false); advanceQueue(); }}
+          onCancel={() => { setShowUpNext(false); syncActions?.sendQueueRemove(syncState.queue[0].ratingKey); }}
         />
       )}
     </div>

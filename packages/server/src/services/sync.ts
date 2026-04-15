@@ -56,6 +56,18 @@ async function killPlexTranscode(hlsSessionId: string | null): Promise<void> {
   }
 }
 
+interface QueueItem {
+  ratingKey: string;
+  title: string;
+  type: string;
+  thumb: string | null;
+  subtitles: boolean;
+  parentTitle?: string;
+  parentIndex?: number;
+  index?: number;
+  year?: number;
+}
+
 interface RoomClient {
   ws: WebSocket;
   userId: string;
@@ -71,6 +83,7 @@ interface RoomState {
   updatedAt: number;
   hlsSessionId: string | null;
   browseContext: string | null;
+  queue: QueueItem[];
 }
 
 interface Room {
@@ -118,6 +131,7 @@ function getOrCreateRoom(instanceId: string): Room {
         updatedAt: Date.now(),
         hlsSessionId: null,
         browseContext: null,
+        queue: [],
       },
     };
     rooms.set(instanceId, room);
@@ -285,6 +299,7 @@ export function attachWebSocketServer(server: Server): void {
           hlsSessionId: room.state.hlsSessionId,
           lastCommandAt: room.state.updatedAt,
           browseContext: room.state.browseContext,
+          queue: room.state.queue,
         });
 
         return;
@@ -351,6 +366,7 @@ export function attachWebSocketServer(server: Server): void {
           room.state.playing = false;
           room.state.position = 0;
           room.state.updatedAt = Date.now();
+          room.state.queue = [];
           stopRoomPing(roomId);
           broadcast(room, ws, { type: "stop" });
           // Kill the Plex transcode server-side so it dies even if viewers
@@ -375,6 +391,34 @@ export function attachWebSocketServer(server: Server): void {
         case "browse": {
           room.state.browseContext = (msg.context as string) || null;
           broadcast(room, ws, { type: "browse", context: room.state.browseContext });
+          break;
+        }
+        case "queue-add": {
+          const item = msg.item as QueueItem;
+          if (item?.ratingKey) {
+            room.state.queue.push(item);
+            broadcast(room, ws, { type: "queue-updated", queue: room.state.queue });
+            sendTo(ws, { type: "queue-updated", queue: room.state.queue });
+          }
+          break;
+        }
+        case "queue-remove": {
+          const ratingKey = msg.ratingKey as string;
+          room.state.queue = room.state.queue.filter((q) => q.ratingKey !== ratingKey);
+          broadcast(room, ws, { type: "queue-updated", queue: room.state.queue });
+          sendTo(ws, { type: "queue-updated", queue: room.state.queue });
+          break;
+        }
+        case "queue-clear": {
+          room.state.queue = [];
+          broadcast(room, ws, { type: "queue-updated", queue: room.state.queue });
+          sendTo(ws, { type: "queue-updated", queue: room.state.queue });
+          break;
+        }
+        case "queue-reorder": {
+          room.state.queue = (msg.queue as QueueItem[]) || [];
+          broadcast(room, ws, { type: "queue-updated", queue: room.state.queue });
+          sendTo(ws, { type: "queue-updated", queue: room.state.queue });
           break;
         }
       }

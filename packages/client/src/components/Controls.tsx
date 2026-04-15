@@ -12,6 +12,8 @@ interface ControlsProps {
   onToggleMute?: () => void;
   onOpenTrackSwitcher?: () => void;
   showKeyboardHints?: boolean;
+  queueCount?: number;
+  onOpenQueue?: () => void;
 }
 
 function fmt(seconds: number): string {
@@ -37,6 +39,8 @@ export function Controls({
   onToggleMute,
   onOpenTrackSwitcher,
   showKeyboardHints = true,
+  queueCount,
+  onOpenQueue,
 }: ControlsProps) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -279,6 +283,12 @@ export function Controls({
             </span>
           </div>
           <div style={styles.right}>
+            {isHost && queueCount != null && queueCount > 0 && onOpenQueue && (
+              <button onClick={onOpenQueue} style={styles.queueBtn} title="Queue">
+                <span style={{ fontSize: 14 }}>{"\u25B6"}</span>
+                <span style={styles.queueBadge}>{queueCount}</span>
+              </button>
+            )}
             {isHost && onOpenTrackSwitcher && (
               <button onClick={onOpenTrackSwitcher} style={styles.gearBtn} title="Audio & Subtitles">
                 {"\u2699"}
@@ -437,6 +447,16 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     fontSize: "16px",
     fontFamily: "inherit",
+  },
+  queueBtn: {
+    display: "flex", alignItems: "center", gap: "4px",
+    background: "rgba(255,255,255,0.1)", border: "none",
+    borderRadius: "16px", padding: "4px 10px",
+    color: "#fff", cursor: "pointer", fontSize: "12px", fontFamily: "inherit",
+  },
+  queueBadge: {
+    background: "#e5a00d", color: "#000", borderRadius: "8px",
+    padding: "1px 6px", fontSize: "11px", fontWeight: 700,
   },
   muteBtn: {
     background: "none",
