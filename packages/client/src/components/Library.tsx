@@ -27,6 +27,7 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
   const [items, setItems] = useState<PlexItem[]>([]);
   const [totalSize, setTotalSize] = useState(0);
   const [searchResults, setSearchResults] = useState<PlexItem[] | null>(null);
+  const rawSearchResults = useRef<PlexItem[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [genres, setGenres] = useState<Genre[]>([]);
@@ -110,18 +111,36 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
       .finally(() => setLoadingMore(false));
   }, [activeSection, items.length, loadingMore, selectedGenres, sort]);
 
+  // Find the active section's type ("movie" or "show") to filter search results
+  const activeSectionType = sections.find((s) => s.id === activeSection)?.type;
+
   const handleSearch = useCallback(async (query: string) => {
     setLoading(true);
     try {
       const { items: results } = await searchPlex(query);
-      setSearchResults(results);
+      rawSearchResults.current = results;
+      // Filter by active tab: Movies tab → only movies, TV Shows tab → only shows (no episodes/seasons)
+      const filtered = activeSectionType
+        ? results.filter((item) => item.type === activeSectionType)
+        : results;
+      setSearchResults(filtered);
     } catch (err) {
       console.error("Search failed:", err);
     }
     setLoading(false);
-  }, []);
+  }, [activeSectionType]);
+
+  // Re-filter search results when switching tabs during an active search
+  useEffect(() => {
+    if (!rawSearchResults.current) return;
+    const filtered = activeSectionType
+      ? rawSearchResults.current.filter((item) => item.type === activeSectionType)
+      : rawSearchResults.current;
+    setSearchResults(filtered);
+  }, [activeSectionType]);
 
   const handleClearSearch = useCallback(() => {
+    rawSearchResults.current = null;
     setSearchResults(null);
   }, []);
 
@@ -150,8 +169,8 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
         />
       )}
 
-      {/* Section tabs */}
-      {!searchResults && sections.length > 1 && (
+      {/* Section tabs — visible during search so user can switch result type */}
+      {sections.length > 1 && (
         <div style={styles.tabs}>
           {sections.map((s) => (
             <button

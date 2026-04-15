@@ -136,6 +136,7 @@ export function Controls({
       // what it's already transcoded, so jumping far requires a new transcode
       // with an offset. Falls back to in-place seek if restart isn't available.
       if (onSeekRestart) {
+        setCurrentTime(newTime); // show target time immediately while loading
         onSeekRestart(newTime);
       } else {
         videoRef.current.currentTime = newTime;
