@@ -57,9 +57,16 @@ export function App() {
     setViewStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
   }, []);
 
+  const emitBrowse = useCallback((context: string) => {
+    if (effectiveIsHost && syncActions) {
+      syncActions.sendBrowse(context);
+    }
+  }, [effectiveIsHost, syncActions]);
+
   const goHome = useCallback(() => {
     setViewStack([{ kind: "library" }]);
-  }, []);
+    emitBrowse("Browsing the library");
+  }, [emitBrowse]);
 
   // Track previous ratingKey to detect changes
   const prevRatingKeyRef = useRef<string | null>(null);
@@ -121,10 +128,17 @@ export function App() {
   const handleSelect = useCallback((item: PlexItem) => {
     if (item.type === "show") {
       pushView({ kind: "show", item });
+      emitBrowse(`Looking at ${item.title}`);
     } else {
       pushView({ kind: "detail", item });
+      const label = item.parentTitle
+        ? `Looking at ${item.parentTitle} \u2014 S${item.parentIndex ?? "?"}E${item.index ?? "?"} \u00b7 ${item.title}`
+        : item.year
+          ? `Looking at ${item.title} (${item.year})`
+          : `Looking at ${item.title}`;
+      emitBrowse(label);
     }
-  }, [pushView]);
+  }, [pushView, emitBrowse]);
 
   const handlePlay = useCallback((item: PlexItem, subtitles: boolean) => {
     pushView({ kind: "player", item, subtitles });
@@ -132,17 +146,23 @@ export function App() {
 
   const handleShowSeason = useCallback((season: PlexItem, show: PlexItem) => {
     pushView({ kind: "season", item: season, show });
-  }, [pushView]);
+    emitBrowse(`Looking at ${show.title} \u2014 Season ${season.index ?? "?"}`);
+  }, [pushView, emitBrowse]);
 
   // For single-season shows: replace the show view with the season view
   // so back goes straight to library instead of looping
   const handleReplaceShowWithSeason = useCallback((season: PlexItem, show: PlexItem) => {
     replaceView({ kind: "season", item: season, show });
-  }, [replaceView]);
+    emitBrowse(`Looking at ${show.title} \u2014 Season ${season.index ?? "?"}`);
+  }, [replaceView, emitBrowse]);
 
   const handleSeasonEpisode = useCallback((episode: PlexItem) => {
     pushView({ kind: "detail", item: episode });
-  }, [pushView]);
+    const label = episode.parentTitle
+      ? `Looking at ${episode.parentTitle} \u2014 S${episode.parentIndex ?? "?"}E${episode.index ?? "?"} \u00b7 ${episode.title}`
+      : `Looking at ${episode.title}`;
+    emitBrowse(label);
+  }, [pushView, emitBrowse]);
 
   if (error) {
     return (
@@ -210,7 +230,11 @@ export function App() {
             <div style={styles.waitingBanner}>
               <div style={styles.waitingDot} />
               <div>
-                <div style={styles.waitingPrimary}>Host is browsing the library...</div>
+                <div style={styles.waitingPrimary}>
+                  {syncState.browseContext
+                    ? `Host is ${syncState.browseContext.charAt(0).toLowerCase()}${syncState.browseContext.slice(1)}`
+                    : "Host is browsing the library..."}
+                </div>
                 <div style={styles.waitingSecondary}>You can browse too — playback starts when the host picks something</div>
               </div>
             </div>
@@ -220,6 +244,7 @@ export function App() {
             onSelect={handleSelect}
             activeSection={librarySection}
             onActiveSectionChange={setLibrarySection}
+            onBrowseContext={effectiveIsHost ? (ctx) => syncActions.sendBrowse(ctx) : undefined}
           />
         </>
       )}

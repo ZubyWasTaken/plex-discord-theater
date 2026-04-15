@@ -70,6 +70,7 @@ interface RoomState {
   position: number;
   updatedAt: number;
   hlsSessionId: string | null;
+  browseContext: string | null;
 }
 
 interface Room {
@@ -116,6 +117,7 @@ function getOrCreateRoom(instanceId: string): Room {
         position: 0,
         updatedAt: Date.now(),
         hlsSessionId: null,
+        browseContext: null,
       },
     };
     rooms.set(instanceId, room);
@@ -282,6 +284,7 @@ export function attachWebSocketServer(server: Server): void {
           position: interpolatedPosition(room.state),
           hlsSessionId: room.state.hlsSessionId,
           lastCommandAt: room.state.updatedAt,
+          browseContext: room.state.browseContext,
         });
 
         return;
@@ -308,6 +311,7 @@ export function attachWebSocketServer(server: Server): void {
           room.state.playing = true;
           room.state.position = 0;
           room.state.updatedAt = Date.now();
+          room.state.browseContext = null;
           if (room.state.hlsSessionId) startRoomPing(roomId, room.state.hlsSessionId);
           broadcast(room, ws, {
             type: "play",
@@ -366,6 +370,11 @@ export function attachWebSocketServer(server: Server): void {
             position: room.state.position,
             playing: room.state.playing,
           });
+          break;
+        }
+        case "browse": {
+          room.state.browseContext = (msg.context as string) || null;
+          broadcast(room, ws, { type: "browse", context: room.state.browseContext });
           break;
         }
       }

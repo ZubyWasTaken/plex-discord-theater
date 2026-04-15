@@ -22,6 +22,8 @@ export interface SyncState {
   authFailed: boolean;
   /** True if max reconnect attempts exhausted */
   reconnectFailed: boolean;
+  /** What the host is currently browsing, or null if playing/idle */
+  browseContext: string | null;
 }
 
 export interface SyncActions {
@@ -31,6 +33,7 @@ export interface SyncActions {
   sendSeek: (position: number) => void;
   sendStop: () => void;
   sendHeartbeat: (position: number, playing: boolean) => void;
+  sendBrowse: (context: string) => void;
 }
 
 interface UseSyncOptions {
@@ -53,6 +56,7 @@ const INITIAL_STATE: SyncState = {
   lastCommandAt: 0,
   authFailed: false,
   reconnectFailed: false,
+  browseContext: null,
 };
 
 export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
@@ -80,6 +84,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
       sendStop: () => send({ type: "stop" }),
       sendHeartbeat: (position: number, playing: boolean) =>
         send({ type: "heartbeat", position, playing }),
+      sendBrowse: (context: string) => send({ type: "browse", context }),
     }),
     [send],
   );
@@ -132,6 +137,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               hlsSessionId: (msg.hlsSessionId as string) || null,
               commandSeq: prev.commandSeq + 1,
               lastCommandAt: (msg.lastCommandAt as number) ?? Date.now(),
+              browseContext: (msg.browseContext as string) || null,
             }));
             break;
           case "play":
@@ -145,6 +151,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               position: 0,
               hostDisconnected: false,
               commandSeq: prev.commandSeq + 1,
+              browseContext: null,
             }));
             break;
           case "pause":
@@ -179,6 +186,7 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               playing: false,
               position: 0,
               commandSeq: prev.commandSeq + 1,
+              browseContext: null,
             }));
             break;
           case "heartbeat":
@@ -187,6 +195,12 @@ export function useSync({ instanceId, userId, enabled }: UseSyncOptions): {
               ...prev,
               position: (msg.position as number) ?? prev.position,
               playing: msg.playing !== false,
+            }));
+            break;
+          case "browse":
+            setState((prev) => ({
+              ...prev,
+              browseContext: (msg.context as string) || null,
             }));
             break;
           case "host-disconnected":

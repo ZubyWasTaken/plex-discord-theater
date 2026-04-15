@@ -20,9 +20,10 @@ interface LibraryProps {
   onSelect: (item: PlexItem) => void;
   activeSection: string | null;
   onActiveSectionChange: (id: string) => void;
+  onBrowseContext?: (context: string) => void;
 }
 
-export function Library({ isHost, onSelect, activeSection, onActiveSectionChange }: LibraryProps) {
+export function Library({ isHost, onSelect, activeSection, onActiveSectionChange, onBrowseContext }: LibraryProps) {
   const [sections, setSections] = useState<PlexSection[]>([]);
   const [items, setItems] = useState<PlexItem[]>([]);
   const [totalSize, setTotalSize] = useState(0);
@@ -178,7 +179,10 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
           {sections.map((s) => (
             <button
               key={s.id}
-              onClick={() => onActiveSectionChange(s.id)}
+              onClick={() => {
+                onActiveSectionChange(s.id);
+                if (onBrowseContext) onBrowseContext(`Browsing ${s.title}`);
+              }}
               style={{
                 ...styles.tab,
                 ...(s.id === activeSection ? styles.tabActive : {}),
