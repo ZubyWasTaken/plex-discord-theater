@@ -501,6 +501,13 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     setRetryKey((k) => k + 1);
   }, []);
 
+  // Build rich display title for Controls top bar
+  const displayTitle = item.parentTitle
+    ? `${item.parentTitle} \u2014 S${item.parentIndex ?? "?"}E${item.index ?? "?"} \u00b7 ${item.title}`
+    : item.year
+      ? `${item.title} (${item.year})`
+      : item.title;
+
   return (
     <div style={styles.container}>
       {syncState?.authFailed ? (
@@ -530,7 +537,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
       <Controls
         videoRef={videoRef}
         isHost={isHost}
-        title={item.title}
+        title={displayTitle}
         onBack={handleBack}
         onSyncPause={isHost ? syncActions?.sendPause : undefined}
         onSyncResume={isHost ? syncActions?.sendResume : undefined}
