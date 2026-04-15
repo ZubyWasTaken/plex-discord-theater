@@ -34,6 +34,8 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const [vpsRelay, setVpsRelay] = useState<boolean | null>(null); // null = not yet loaded
   const [buffering, setBuffering] = useState(true);
   const [showTrackSwitcher, setShowTrackSwitcher] = useState(false);
+  const [trackSwitching, setTrackSwitching] = useState<"audio" | "subtitle" | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const retryCountRef = useRef(0);
   const hlsDeadRef = useRef(false);
   const networkRetryRef = useRef(0);
@@ -232,6 +234,10 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           if (!mounted) return;
+
+          // Clear track switching overlay
+          setTrackSwitching(null);
+          canvasRef.current = null;
 
           // Viewer joining mid-playback: seek to host's position immediately
           // instead of waiting for the 5s heartbeat drift threshold
@@ -486,14 +492,29 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
   const handleTrackChange = useCallback(async (partId: number, audioStreamID?: number, subtitleStreamID?: number) => {
     if (!sessionIdRef.current) return;
+
+    // Capture last video frame to canvas for seamless transition
+    const video = videoRef.current;
+    if (video && video.videoWidth > 0) {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext("2d")!.drawImage(video, 0, 0);
+      canvasRef.current = canvas;
+    }
+
+    // Show overlay
+    setTrackSwitching(audioStreamID !== undefined ? "audio" : "subtitle");
+
     try {
       await setStreams(partId, { audioStreamID, subtitleStreamID });
     } catch (err) {
       console.error("Failed to set streams:", err);
+      setTrackSwitching(null);
+      canvasRef.current = null;
       return;
     }
     // Restart HLS session to apply new tracks, preserving current position
-    const video = videoRef.current;
     if (video && video.currentTime > 0) {
       seekOffsetRef.current = video.currentTime;
     }
@@ -533,6 +554,30 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         style={styles.video}
         playsInline
       />
+
+      {/* Track switching freeze-frame overlay */}
+      {trackSwitching && (
+        <div style={styles.trackSwitchOverlay}>
+          {canvasRef.current && (
+            <canvas
+              ref={(el) => {
+                if (el && canvasRef.current) {
+                  el.width = canvasRef.current.width;
+                  el.height = canvasRef.current.height;
+                  el.getContext("2d")!.drawImage(canvasRef.current, 0, 0);
+                }
+              }}
+              style={styles.trackSwitchCanvas}
+            />
+          )}
+          <div style={styles.trackSwitchMessage}>
+            <div style={styles.bufferingSpinner} />
+            <span style={styles.bufferingText}>
+              {trackSwitching === "audio" ? "Switching audio..." : "Switching subtitles..."}
+            </span>
+          </div>
+        </div>
+      )}
 
       <Controls
         videoRef={videoRef}
@@ -617,5 +662,30 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "13px",
     fontWeight: 500,
     marginTop: "14px",
+  },
+  trackSwitchOverlay: {
+    position: "absolute",
+    inset: 0,
+    background: "#000",
+    zIndex: 15,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  trackSwitchCanvas: {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    filter: "brightness(0.5)",
+  },
+  trackSwitchMessage: {
+    position: "relative",
+    zIndex: 1,
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    gap: "14px",
   },
 };
