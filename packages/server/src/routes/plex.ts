@@ -848,7 +848,7 @@ router.get(
         videoBitrate: "8000",
         peakBitrate: "12000",
         videoQuality: "99",
-        autoAdjustQuality: "1",
+        autoAdjustQuality: "0",
         location: "lan",
         mediaBufferSize: "102400",
         // Shorter segments transcode faster individually, so Plex can start
