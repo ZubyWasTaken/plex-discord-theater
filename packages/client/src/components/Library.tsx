@@ -34,6 +34,7 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
   const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
   const [sort, setSort] = useState("titleSort:asc");
   const loadMoreAbort = useRef<AbortController | null>(null);
+  const searchQueryRef = useRef("");
 
   // Load sections on mount
   useEffect(() => {
@@ -115,6 +116,7 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
   const activeSectionType = sections.find((s) => s.id === activeSection)?.type;
 
   const handleSearch = useCallback(async (query: string) => {
+    searchQueryRef.current = query;
     setLoading(true);
     try {
       const { items: results } = await searchPlex(query);
@@ -151,6 +153,7 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
     [onSelect],
   );
 
+  const searchQuery = searchQueryRef.current;
   const displayItems = searchResults ?? items;
   const hasMore = !searchResults && items.length < totalSize;
 
@@ -191,7 +194,20 @@ export function Library({ isHost, onSelect, activeSection, onActiveSectionChange
       {loading ? (
         <SkeletonGrid />
       ) : displayItems.length === 0 ? (
-        <div style={styles.empty}>No items found</div>
+        <div style={styles.emptyState}>
+          <div style={styles.emptyIcon}>
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+            </svg>
+          </div>
+          <p style={styles.emptyText}>
+            {searchResults !== null
+              ? `No results for \u201c${searchQuery}\u201d`
+              : selectedGenres.length > 0
+                ? `No ${activeSectionType === "show" ? "shows" : "movies"} match these filters`
+                : "This library is empty"}
+          </p>
+        </div>
       ) : (
         <>
           <div style={styles.grid}>
@@ -256,11 +272,21 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "14px",
     padding: "16px 24px",
   },
-  empty: {
-    textAlign: "center",
-    padding: "64px",
+  emptyState: {
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "48px 24px",
+    gap: "12px",
+  },
+  emptyIcon: {
+    color: "#555",
+  },
+  emptyText: {
     color: "#666",
-    fontSize: "15px",
+    fontSize: "14px",
+    textAlign: "center" as const,
   },
   loadMoreWrap: {
     display: "flex",

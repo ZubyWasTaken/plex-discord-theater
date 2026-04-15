@@ -115,7 +115,14 @@ export function ShowDetail({ item, onSelectSeason, onReplaceWithSeason, onBack }
           </div>
 
           {/* Seasons grid */}
-          {seasons.length > 0 && (
+          {seasons.length === 0 && !loading ? (
+            <div style={{
+              display: "flex", flexDirection: "column" as const, alignItems: "center",
+              padding: "48px 24px", gap: "12px",
+            }}>
+              <p style={{ color: "#666", fontSize: "14px" }}>No seasons available</p>
+            </div>
+          ) : (
             <div style={styles.seasonsSection}>
               <h2 style={styles.seasonsTitle}>Seasons</h2>
               <div style={styles.seasonsGrid}>

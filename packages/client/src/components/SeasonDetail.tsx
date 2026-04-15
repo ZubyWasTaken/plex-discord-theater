@@ -64,7 +64,12 @@ export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDe
           <div style={styles.spinner} />
         </div>
       ) : episodes.length === 0 ? (
-        <div style={styles.empty}>No episodes found</div>
+        <div style={{
+          display: "flex", flexDirection: "column" as const, alignItems: "center",
+          padding: "48px 24px", gap: "12px",
+        }}>
+          <p style={{ color: "#666", fontSize: "14px" }}>No episodes available</p>
+        </div>
       ) : (
         <div style={styles.list}>
           {episodes.map((ep) => {
