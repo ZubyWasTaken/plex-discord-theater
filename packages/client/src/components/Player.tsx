@@ -35,6 +35,10 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const [buffering, setBuffering] = useState(true);
   const [showTrackSwitcher, setShowTrackSwitcher] = useState(false);
   const [trackSwitching, setTrackSwitching] = useState<"audio" | "subtitle" | null>(null);
+  const [recovering, setRecovering] = useState(false);
+  const recoveryAttemptRef = useRef(0);
+  const recoveryPositionRef = useRef(0);
+  const MAX_RECOVERY_ATTEMPTS = 2;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const retryCountRef = useRef(0);
   const hlsDeadRef = useRef(false);
@@ -239,6 +243,9 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
           setTrackSwitching(null);
           canvasRef.current = null;
 
+          // Clear recovery overlay
+          setRecovering(false);
+
           // Viewer joining mid-playback: seek to host's position immediately
           // instead of waiting for the 5s heartbeat drift threshold
           if (!isHostRef.current && syncActionsRef.current) {
@@ -269,28 +276,81 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         });
 
         hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (data.fatal) {
-            console.error("HLS fatal error:", data);
-            if (mounted) setError(`Playback error: ${data.type}`);
-            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetryRef.current < MAX_NETWORK_RETRIES) {
-              networkRetryRef.current++;
-              hls.startLoad();
-            } else if (!ownsSessionRef.current && retryCountRef.current < MAX_VIEWER_RETRIES) {
-              // Viewer: retry by bumping retryKey after a delay (re-runs the effect)
+          if (!data.fatal) return;
+          console.error("HLS fatal error:", data);
+
+          // MEDIA_ERROR: try HLS.js built-in recovery first
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            console.warn("[HLS] Fatal media error, attempting recoverMediaError");
+            hls.recoverMediaError();
+            return;
+          }
+
+          // NETWORK_ERROR: try hls.startLoad() first (transient failures)
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetryRef.current < MAX_NETWORK_RETRIES) {
+            networkRetryRef.current++;
+            hls.startLoad();
+            return;
+          }
+
+          // Viewer: retry by bumping retryKey
+          if (!ownsSessionRef.current) {
+            if (retryCountRef.current < MAX_VIEWER_RETRIES) {
               retryCountRef.current++;
               console.warn(`[Viewer] HLS fatal error, retry ${retryCountRef.current}/${MAX_VIEWER_RETRIES} in 2s`);
               setTimeout(() => {
                 if (mounted) setRetryKey((k) => k + 1);
               }, 2000);
             } else {
+              if (mounted) setError(`Playback error: ${data.type}`);
+              hlsDeadRef.current = true;
+            }
+            return;
+          }
+
+          // Host: auto-recovery
+          if (recoveryAttemptRef.current < MAX_RECOVERY_ATTEMPTS) {
+            recoveryAttemptRef.current++;
+            const video = videoRef.current;
+            recoveryPositionRef.current = video?.currentTime ?? 0;
+
+            // Capture freeze frame (reuse canvasRef from track switching)
+            if (video && video.videoWidth > 0) {
+              const canvas = document.createElement("canvas");
+              canvas.width = video.videoWidth;
+              canvas.height = video.videoHeight;
+              canvas.getContext("2d")!.drawImage(video, 0, 0);
+              canvasRef.current = canvas;
+            }
+
+            if (mounted) {
+              setRecovering(true);
+              setError(null);
+            }
+
+            console.warn(`[Host] Stream interrupted, auto-recovery attempt ${recoveryAttemptRef.current}/${MAX_RECOVERY_ATTEMPTS}`);
+
+            // Wait 2s then restart transcode at saved position
+            setTimeout(() => {
+              if (!mounted) return;
               destroyLocal();
-              if (ownsSessionRef.current && sessionIdRef.current) {
+              if (sessionIdRef.current) {
                 pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
                 sessionIdRef.current = null;
               }
-              if (!ownsSessionRef.current) {
-                hlsDeadRef.current = true;
-              }
+              seekOffsetRef.current = recoveryPositionRef.current;
+              setRetryKey((k) => k + 1);
+            }, 2000);
+          } else {
+            // Recovery exhausted — show manual retry
+            if (mounted) {
+              setError(null);
+              setRecovering(false);
+            }
+            destroyLocal();
+            if (sessionIdRef.current) {
+              pendingStopRef.current = stopSession(sessionIdRef.current).catch(() => {});
+              sessionIdRef.current = null;
             }
           }
         });
@@ -575,6 +635,63 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
             <span style={styles.bufferingText}>
               {trackSwitching === "audio" ? "Switching audio..." : "Switching subtitles..."}
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* Recovery overlay (stream interrupted) */}
+      {recovering && (
+        <div style={styles.trackSwitchOverlay}>
+          {canvasRef.current && (
+            <canvas
+              ref={(el) => {
+                if (el && canvasRef.current) {
+                  el.width = canvasRef.current.width;
+                  el.height = canvasRef.current.height;
+                  el.getContext("2d")!.drawImage(canvasRef.current, 0, 0);
+                }
+              }}
+              style={styles.trackSwitchCanvas}
+            />
+          )}
+          <div style={styles.trackSwitchMessage}>
+            <div style={styles.bufferingSpinner} />
+            <span style={styles.bufferingText}>Stream interrupted — Reconnecting...</span>
+          </div>
+        </div>
+      )}
+
+      {/* Recovery exhausted — manual retry */}
+      {!recovering && !error && recoveryAttemptRef.current >= MAX_RECOVERY_ATTEMPTS && !sessionIdRef.current && (
+        <div style={styles.trackSwitchOverlay}>
+          <div style={styles.trackSwitchMessage}>
+            <span style={{ color: "#e74c3c", fontSize: "16px", fontWeight: 600 }}>Stream lost</span>
+            <button
+              onClick={() => {
+                recoveryAttemptRef.current = 0;
+                recoveryPositionRef.current = recoveryPositionRef.current || 0;
+                seekOffsetRef.current = recoveryPositionRef.current;
+                setRetryKey((k) => k + 1);
+                setRecovering(true);
+              }}
+              style={{
+                padding: "10px 24px", borderRadius: "8px", border: "none",
+                background: "#e5a00d", color: "#000", fontSize: "14px",
+                fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              Retry
+            </button>
+            <button
+              onClick={handleBack}
+              style={{
+                padding: "8px 20px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)",
+                background: "transparent", color: "#888", fontSize: "13px",
+                cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              Go Back
+            </button>
           </div>
         </div>
       )}
