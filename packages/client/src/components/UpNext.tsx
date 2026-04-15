@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { QueueItem } from "../hooks/useSync";
 
 interface UpNextProps {
@@ -12,19 +12,33 @@ const COUNTDOWN_SECONDS = 15;
 export function UpNext({ item, onPlayNow, onCancel }: UpNextProps) {
   const [remaining, setRemaining] = useState(COUNTDOWN_SECONDS);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const firedRef = useRef(false);
+  const onPlayNowRef = useRef(onPlayNow);
+  onPlayNowRef.current = onPlayNow;
+
+  const fire = useCallback(() => {
+    if (firedRef.current) return;
+    firedRef.current = true;
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    onPlayNowRef.current();
+  }, []);
 
   useEffect(() => {
+    firedRef.current = false;
     intervalRef.current = setInterval(() => {
       setRemaining((r) => {
         if (r <= 1) {
-          onPlayNow();
+          fire();
           return 0;
         }
         return r - 1;
       });
     }, 1000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [onPlayNow]);
+  }, [fire]);
 
   const title = item.parentTitle
     ? `${item.parentTitle} \u2014 S${item.parentIndex ?? "?"}E${item.index ?? "?"} \u00b7 ${item.title}`
@@ -36,7 +50,7 @@ export function UpNext({ item, onPlayNow, onCancel }: UpNextProps) {
       <div style={styles.title}>{title}</div>
       <div style={styles.countdown}>Playing in {remaining}s</div>
       <div style={styles.buttons}>
-        <button onClick={onPlayNow} style={styles.playNowBtn}>Play Now</button>
+        <button onClick={fire} style={styles.playNowBtn}>Play Now</button>
         <button onClick={onCancel} style={styles.cancelBtn}>Cancel</button>
       </div>
     </div>

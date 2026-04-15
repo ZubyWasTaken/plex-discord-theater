@@ -396,7 +396,11 @@ export function attachWebSocketServer(server: Server): void {
         case "queue-add": {
           const item = msg.item as QueueItem;
           if (item?.ratingKey) {
-            room.state.queue.push(item);
+            // Prevent duplicate items in the queue
+            const alreadyQueued = room.state.queue.some((q) => q.ratingKey === item.ratingKey);
+            if (!alreadyQueued) {
+              room.state.queue.push(item);
+            }
             broadcast(room, ws, { type: "queue-updated", queue: room.state.queue });
             sendTo(ws, { type: "queue-updated", queue: room.state.queue });
           }

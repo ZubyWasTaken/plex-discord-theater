@@ -49,6 +49,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const hlsDeadRef = useRef(false);
   const networkRetryRef = useRef(0);
   const pendingStopRef = useRef<Promise<void> | null>(null);
+  const bufferCleanupRef = useRef<(() => void) | null>(null);
   const seekOffsetRef = useRef(0);
   const lastProgressSaveRef = useRef(0);
   const PROGRESS_SAVE_INTERVAL_MS = 30_000;
@@ -112,6 +113,10 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
       clearInterval(heartbeatIntervalRef.current);
       heartbeatIntervalRef.current = null;
     }
+    if (bufferCleanupRef.current) {
+      bufferCleanupRef.current();
+      bufferCleanupRef.current = null;
+    }
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
@@ -130,6 +135,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     let mounted = true;
 
     destroyLocal();
+    setShowUpNext(false);
 
     // Host creates a new session; viewer reuses the host's session
     const sessionOwner = ownsSessionRef.current;
@@ -278,6 +284,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
             setBuffering(false);
             retryCountRef.current = 0;
             networkRetryRef.current = 0;
+            recoveryAttemptRef.current = 0;
             hlsDeadRef.current = false;
           }
         });
@@ -366,9 +373,17 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         hls.attachMedia(video);
 
         // Buffering indicator events
-        video.addEventListener("waiting", () => { if (!video.paused) setBuffering(true); });
-        video.addEventListener("playing", () => setBuffering(false));
-        video.addEventListener("seeked", () => { if (!video.paused) setBuffering(false); });
+        const onWaiting = () => { if (!video.paused) setBuffering(true); };
+        const onPlaying = () => setBuffering(false);
+        const onSeeked = () => { if (!video.paused) setBuffering(false); };
+        video.addEventListener("waiting", onWaiting);
+        video.addEventListener("playing", onPlaying);
+        video.addEventListener("seeked", onSeeked);
+        bufferCleanupRef.current = () => {
+          video.removeEventListener("waiting", onWaiting);
+          video.removeEventListener("playing", onPlaying);
+          video.removeEventListener("seeked", onSeeked);
+        };
       } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
         const token = getSessionToken();
         const sep = url.includes("?") ? "&" : "?";

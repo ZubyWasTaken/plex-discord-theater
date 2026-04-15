@@ -74,6 +74,12 @@ export function MovieDetail({ item, isHost, onPlay, onBack, isPlaying, onAddToQu
   if (loading) {
     return (
       <div style={styles.page}>
+        <button onClick={onBack} style={styles.backBtn}>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <path d="M12.5 15L7.5 10L12.5 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          Back
+        </button>
         <SkeletonBlock width="100%" height={300} borderRadius={0} />
         <div style={{ display: "flex", gap: "24px", padding: "24px", maxWidth: 1100 }}>
           <SkeletonBlock width={180} height={270} borderRadius={8} />
