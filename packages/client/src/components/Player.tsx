@@ -38,6 +38,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
   const hlsDeadRef = useRef(false);
   const networkRetryRef = useRef(0);
   const pendingStopRef = useRef<Promise<void> | null>(null);
+  const seekOffsetRef = useRef(0);
 
   // Stable refs so the HLS effect doesn't re-run when these change
   const syncActionsRef = useRef(syncActions);
@@ -130,7 +131,9 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
 
     sessionIdRef.current = sessionId;
 
-    const url = hlsMasterUrl(item.ratingKey, sessionId, { subtitles });
+    const offset = seekOffsetRef.current;
+    seekOffsetRef.current = 0;
+    const url = hlsMasterUrl(item.ratingKey, sessionId, { subtitles, offset: offset > 0 ? offset : undefined });
 
     async function start() {
       if (pendingStopRef.current) {
@@ -472,6 +475,15 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
     onBack();
   }, [destroyLocal, onBack]);
 
+  // Seek to a position beyond the transcoded buffer — restarts the Plex transcode
+  // with an offset so segments exist at the target position.
+  const handleSeekRestart = useCallback((positionSeconds: number) => {
+    seekOffsetRef.current = positionSeconds;
+    setBuffering(true);
+    syncActionsRef.current?.sendSeek(positionSeconds);
+    setRetryKey((k) => k + 1);
+  }, []);
+
   const handleTrackChange = useCallback(async (partId: number, audioStreamID?: number, subtitleStreamID?: number) => {
     if (!sessionIdRef.current) return;
     try {
@@ -480,8 +492,11 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
       console.error("Failed to set streams:", err);
       return;
     }
-    // Restart HLS session to apply new tracks
-    // TODO: Preserve position by passing offset to hlsMasterUrl
+    // Restart HLS session to apply new tracks, preserving current position
+    const video = videoRef.current;
+    if (video && video.currentTime > 0) {
+      seekOffsetRef.current = video.currentTime;
+    }
     setShowTrackSwitcher(false);
     setRetryKey((k) => k + 1);
   }, []);
@@ -520,6 +535,7 @@ export function Player({ item, isHost, subtitles, onBack, syncState, syncActions
         onSyncPause={isHost ? syncActions?.sendPause : undefined}
         onSyncResume={isHost ? syncActions?.sendResume : undefined}
         onSyncSeek={isHost ? syncActions?.sendSeek : undefined}
+        onSeekRestart={isHost ? handleSeekRestart : undefined}
         onOpenTrackSwitcher={isHost ? () => setShowTrackSwitcher(true) : undefined}
       />
       {showTrackSwitcher && (

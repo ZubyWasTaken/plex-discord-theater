@@ -8,6 +8,7 @@ interface ControlsProps {
   onSyncPause?: (position: number) => void;
   onSyncResume?: (position: number) => void;
   onSyncSeek?: (position: number) => void;
+  onSeekRestart?: (position: number) => void;
   onToggleMute?: () => void;
   onOpenTrackSwitcher?: () => void;
   showKeyboardHints?: boolean;
@@ -32,6 +33,7 @@ export function Controls({
   onSyncPause,
   onSyncResume,
   onSyncSeek,
+  onSeekRestart,
   onToggleMute,
   onOpenTrackSwitcher,
   showKeyboardHints = true,
@@ -130,10 +132,17 @@ export function Controls({
       const rect = progressRef.current.getBoundingClientRect();
       const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       const newTime = pct * duration;
-      videoRef.current.currentTime = newTime;
-      onSyncSeek?.(newTime);
+      // Restart transcode at the new position — Plex only has segments for
+      // what it's already transcoded, so jumping far requires a new transcode
+      // with an offset. Falls back to in-place seek if restart isn't available.
+      if (onSeekRestart) {
+        onSeekRestart(newTime);
+      } else {
+        videoRef.current.currentTime = newTime;
+        onSyncSeek?.(newTime);
+      }
     },
-    [isHost, duration, videoRef, onSyncSeek],
+    [isHost, duration, videoRef, onSyncSeek, onSeekRestart],
   );
 
   const skipBack = useCallback(() => {
