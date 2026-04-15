@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { fetchMeta, setStreams, getSessionToken, type PlexItem, type PlexMeta } from "../lib/api";
+import { SkeletonBlock } from "./SkeletonBlock";
 
 interface MovieDetailProps {
   item: PlexItem;
@@ -67,6 +68,29 @@ export function MovieDetail({ item, isHost, onPlay, onBack }: MovieDetailProps) 
   const backdropUrl = meta?.art ? authUrl(meta.art) : null;
   const posterUrl = meta?.thumb ? authUrl(meta.thumb) : (item.thumb ? authUrl(item.thumb) : null);
 
+  if (loading) {
+    return (
+      <div style={styles.page}>
+        <SkeletonBlock width="100%" height={300} borderRadius={0} />
+        <div style={{ display: "flex", gap: "24px", padding: "24px", maxWidth: 1100 }}>
+          <SkeletonBlock width={180} height={270} borderRadius={8} />
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px" }}>
+            <SkeletonBlock width="60%" height={24} />
+            <SkeletonBlock width="40%" height={16} />
+            <div style={{ display: "flex", gap: "8px" }}>
+              <SkeletonBlock width={60} height={24} borderRadius={12} />
+              <SkeletonBlock width={80} height={24} borderRadius={12} />
+              <SkeletonBlock width={50} height={24} borderRadius={12} />
+            </div>
+            <SkeletonBlock width="100%" height={14} />
+            <SkeletonBlock width="90%" height={14} />
+            <SkeletonBlock width="70%" height={14} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.page}>
       {/* Backdrop */}
@@ -85,12 +109,7 @@ export function MovieDetail({ item, isHost, onPlay, onBack }: MovieDetailProps) 
         Back
       </button>
 
-      {loading ? (
-        <div style={styles.loadingWrap}>
-          <div style={styles.spinner} />
-          <p style={styles.loadingText}>Loading...</p>
-        </div>
-      ) : meta ? (
+      {meta ? (
         <div style={styles.content}>
           {/* Poster + Info layout */}
           <div style={styles.layout}>

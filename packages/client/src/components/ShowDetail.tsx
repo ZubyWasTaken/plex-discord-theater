@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { fetchMeta, fetchChildren, getSessionToken, type PlexItem, type PlexMeta } from "../lib/api";
 import { MovieCard } from "./MovieCard";
+import { SkeletonBlock } from "./SkeletonBlock";
 
 interface ShowDetailProps {
   item: PlexItem;
@@ -52,6 +53,31 @@ export function ShowDetail({ item, onSelectSeason, onReplaceWithSeason, onBack }
   // If auto-navigated, render nothing (the parent will mount SeasonDetail)
   if (autoNavigated) return null;
 
+  if (loading) {
+    return (
+      <div style={styles.page}>
+        <SkeletonBlock width="100%" height={300} borderRadius={0} />
+        <div style={{ display: "flex", gap: "24px", padding: "24px", maxWidth: 1100 }}>
+          <SkeletonBlock width={180} height={270} borderRadius={8} />
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "12px" }}>
+            <SkeletonBlock width="60%" height={24} />
+            <SkeletonBlock width="40%" height={16} />
+            <SkeletonBlock width="100%" height={14} />
+            <SkeletonBlock width="90%" height={14} />
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "16px", padding: "0 24px 24px" }}>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i}>
+              <SkeletonBlock height={240} borderRadius={8} />
+              <SkeletonBlock width="70%" height={14} style={{ marginTop: 8 }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={styles.page}>
       {/* Backdrop */}
@@ -70,12 +96,7 @@ export function ShowDetail({ item, onSelectSeason, onReplaceWithSeason, onBack }
         Back
       </button>
 
-      {loading ? (
-        <div style={styles.loadingWrap}>
-          <div style={styles.spinner} />
-          <p style={styles.loadingText}>Loading...</p>
-        </div>
-      ) : meta ? (
+      {meta ? (
         <div style={styles.content}>
           {/* Poster + Info layout */}
           <div style={styles.layout}>

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { fetchChildren, getSessionToken, type PlexItem } from "../lib/api";
+import { SkeletonBlock } from "./SkeletonBlock";
 
 interface SeasonDetailProps {
   season: PlexItem;
@@ -60,8 +61,18 @@ export function SeasonDetail({ season, show, onSelectEpisode, onBack }: SeasonDe
       </div>
 
       {loading ? (
-        <div style={styles.loadingWrap}>
-          <div style={styles.spinner} />
+        <div style={{ padding: "0 24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+          <SkeletonBlock width="30%" height={18} />
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+              <SkeletonBlock width={200} height={112} borderRadius={8} />
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "8px" }}>
+                <SkeletonBlock width="50%" height={16} />
+                <SkeletonBlock width="80%" height={12} />
+                <SkeletonBlock width="60%" height={12} />
+              </div>
+            </div>
+          ))}
         </div>
       ) : episodes.length === 0 ? (
         <div style={{
